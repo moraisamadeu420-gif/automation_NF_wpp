@@ -1,0 +1,11 @@
+{
+  "devDependencies": {
+    "depcheck": "^1.4.7",
+    "eslint": "^10.4.0",
+    "knip": "^6.14.1",
+    "prettier": "^3.8.3"
+  },
+  "dependencies": {
+    "emoji-regex": "^10.6.0"
+  }
+}

@@ -1,0 +1,32 @@
+# Variáveis sensíveis - NUNCA versionar!
+.env
+
+# Ambiente virtual Python
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Logs e outputs (dados pessoais)
+logs/
+output/
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+venv/
+node_modules/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+logs/
+output/
