@@ -20,6 +20,7 @@ class EmissionRequest:
     tomador_cnpj: str
     tomador_razao_social: str
     service_description: str
+    municipio: str = "Campinas"
     aliquota_iss: float = 2.0
     headless: bool = True
     slow_mo: int = 300

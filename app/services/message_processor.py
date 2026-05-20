@@ -113,6 +113,8 @@ class MessageProcessor:
             await self._handle_onboarding_municipality(sender, user, conv, text)
         elif state == ConversationState.ONBOARDING_CNPJ:
             await self._handle_onboarding_cnpj(sender, user, conv, text)
+        elif state == ConversationState.ONBOARDING_CITY:
+            await self._handle_onboarding_city(sender, user, conv, text)
         elif state == ConversationState.AWAITING_VALUE:
             await self._handle_awaiting_value(sender, user, conv, text)
         elif state == ConversationState.AWAITING_CONFIRMATION:
@@ -215,8 +217,19 @@ class MessageProcessor:
             return
         ctx = await self._sessions.get_context(conv)
         ctx["prestador_cnpj"] = text
+        await self._sessions.transition(conv, ConversationState.ONBOARDING_CITY, ctx)
+        await evolution_client.send_text(
+            sender,
+            "Informe seu municipio (ex: Campinas/SP, Sao Paulo/SP):",
+        )
+
+    async def _handle_onboarding_city(self, sender, user, conv, text) -> None:
+        if not text:
+            await evolution_client.send_text(sender, "Informe seu municipio:")
+            return
+        ctx = await self._sessions.get_context(conv)
+        ctx["municipality"] = text
         ctx["prestador_nome"] = ctx.get("nome", "")
-        ctx["municipality"] = ctx.get("portal_type", "nacional")
         ctx["tomador_cnpj"] = "42.446.277/0001-92"
         ctx["tomador_razao_social"] = "SHOPEE COMERCIO DIGITAL DO BRASIL LTDA"
         ctx["service_description"] = "Servicos de entrega e logistica prestados como motorista parceiro SPX Driver"
@@ -224,7 +237,7 @@ class MessageProcessor:
 
         await self._users.save_credential(user.id, {
             "portal_type": ctx.get("portal_type", "nacional"),
-            "municipality": ctx.get("municipality", "nacional"),
+            "municipality": ctx["municipality"],
             "portal_url": ctx.get("portal_url", ""),
             "username": ctx["username"],
             "password": ctx["password"],
@@ -241,7 +254,8 @@ class MessageProcessor:
             sender,
             f"Configuracao concluida!\n\n"
             f"Portal: {ctx.get('portal_label', ctx.get('portal_type'))}\n"
-            f"CNPJ: {text}\n\n"
+            f"CNPJ: {ctx['prestador_cnpj']}\n"
+            f"Municipio: {text}\n\n"
             "Toda segunda-feira as 9h voce recebera uma mensagem pedindo o valor da semana "
             "para emissao automatica da NFS-e.\n\n"
             "Ou envie '1' a qualquer momento para emitir manualmente."
