@@ -1,229 +1,173 @@
-# 🚀 SPX Driver → NFS-e Automação
+# NFSe Bot
 
-Automação do fluxo semanal: leitura de ganhos no SPX Driver Android → emissão de NFS-e → upload do comprovante.
+Automacao de emissao de Nota Fiscal de Servico Eletroncia (NFS-e) via WhatsApp.
 
-## 📁 Estrutura do Projeto
+O usuario envia um print de ganhos no SPX Driver. O bot le o valor via OCR, acessa o portal da prefeitura via Playwright e devolve o PDF da nota no proprio WhatsApp.
+
+---
+
+## Arquitetura
 
 ```
-spx_nfse_automacao/
-├── config/
-│   └── settings.py          # Configurações centralizadas
-├── modules/
-│   ├── android_spx.py       # Automação Android (ADB/Appium)
-│   ├── nfse_web.py          # Automação web NFS-e (Playwright)
-│   ├── file_manager.py      # Gerenciamento de arquivos (PDF/XML)
-│   ├── history.py           # Histórico e exportação CSV/Excel
-│   └── human_behavior.py    # Esperas e comportamento humano
-├── logs/                    # Logs de execução
-├── output/
-│   ├── notas/               # Notas organizadas por semana
-│   ├── pdf/                 # PDFs baixados
-│   └── xml/                 # XMLs baixados
-├── data/
-│   └── historico.csv        # Histórico de notas emitidas
-├── scripts/
-│   └── agendar_cron.sh      # Script para agendar no cron
-├── tests/
-│   └── test_modules.py      # Testes básicos
-├── main.py                  # Ponto de entrada principal
-├── .env.example             # Exemplo de variáveis de ambiente
-├── requirements.txt         # Dependências Python
-└── README.md
+WhatsApp (Evolution API)
+        |
+        v webhook POST /webhook
++------------------------+
+|   FastAPI (main.py)    |
+|   api/routes/webhook   |
++----------+-------------+
+           |
+           v
++------------------------------+
+|      MessageProcessor        |  State machine por usuario
+|  services/message_processor  |
++------+-----------+-----------+
+       |           |
+       v           v
++----------+  +-----------+
+|OcrService|  |NfseService|
+|  (Groq)  |  |(Playwright)|
++----------+  +-----+-----+
+                    |
+              +-----v------+
+              |  Adapters  |
+              | nacional / |
+              | campinas   |
+              +------------+
 ```
 
-## ⚙️ Pré-requisitos do Sistema
+### Camadas
 
-- Python 3.10+
-- Node.js 18+ (para Playwright)
-- Android Debug Bridge (ADB)
-- Appium 2.x (opcional, mas recomendado)
-- Celular Android com depuração USB ativada
+| Camada | Responsabilidade |
+|---|---|
+| `app/core` | Configuracao, logging, excecoes, seguranca |
+| `app/models` | Entidades SQLAlchemy |
+| `app/database` | Engine async, factory de sessao |
+| `app/repositories` | CRUD isolado por entidade |
+| `app/adapters` | Automacao Playwright por prefeitura |
+| `app/integrations` | Clientes externos (Evolution, Groq) |
+| `app/services` | Logica de negocio |
+| `app/schemas` | DTOs Pydantic (entrada/saida da API) |
+| `app/api` | Rotas FastAPI, middlewares, dependencias |
+| `app/workers` | Preparado para fila de tarefas futura |
 
-## 🔧 Instalação Passo a Passo
+---
 
-### 1. Clone e configure o ambiente Python
+## Setup
+
+### 1. Pre-requisitos
+
+- Python 3.11+
+- Evolution API rodando e acessivel (Railway, VPS, etc.)
+- Conta no Groq Cloud (groq.com)
+
+### 2. Instalacao
 
 ```bash
-# Crie e ative o virtualenv
-python -m venv venv
-source venv/bin/activate      # Linux/Mac
-venv\Scripts\activate         # Windows
-
-# Instale as dependências
-pip install -r requirements.txt
-
-# Instale os navegadores do Playwright
-playwright install chromium
+# Cria venv, instala dependencias e baixa o Chromium
+make install
 ```
 
-### 2. Configure as variáveis de ambiente
+### 3. Configuracao
 
 ```bash
 cp .env.example .env
-# Edite o .env com seus dados reais
-nano .env
+# Edite .env com suas chaves
 ```
 
-### 3. Instale o ADB (Android Debug Bridge)
+Variaveis obrigatorias:
 
-**Ubuntu/Debian:**
+```
+EVOLUTION_URL=https://sua-evolution-api.com
+EVOLUTION_API_KEY=sua_chave
+GROQ_API_KEY=sua_chave_groq
+```
+
+### 4. Iniciar
 
 ```bash
-sudo apt-get install adb
+# Desenvolvimento (reload automatico)
+make dev
+
+# Producao
+make start
 ```
 
-**Windows:**
-Baixe o Android Platform Tools: https://developer.android.com/tools/releases/platform-tools
+### 5. Expor o webhook (desenvolvimento local)
 
-**Mac:**
+Use ngrok para receber webhooks da Evolution API:
 
 ```bash
-brew install android-platform-tools
+ngrok http 8000
 ```
 
-### 4. Configure o celular Android para depuração USB
+Configure na Evolution API:
+- URL: `https://seu-ngrok.ngrok.io/webhook`
+- Evento: `MESSAGES_UPSERT`
 
-1. Vá em **Configurações → Sobre o telefone**
-2. Toque **7x em "Número da versão"** para ativar o Modo Desenvolvedor
-3. Vá em **Configurações → Opções do desenvolvedor**
-4. Ative **Depuração USB**
-5. Conecte o cabo USB no PC
-6. No celular, **autorize o PC** quando aparecer o popup
+---
 
-### 5. Verifique a conexão ADB
+## Fluxo de uso
 
-```bash
-adb devices
-# Deve aparecer: Lista of devices attached
-# XXXXXXXXXX   device
-```
+1. Usuario manda qualquer mensagem no WhatsApp
+2. Bot detecta usuario novo e inicia onboarding (coleta credenciais NFSe)
+3. Usuario configurado ve o menu de opcoes
+4. Usuario escolhe emitir nota e envia print do SPX Driver
+5. Bot le o valor via OCR (Groq Vision)
+6. Bot confirma valor com o usuario
+7. Bot acessa o portal via Playwright e emite a nota
+8. PDF e enviado de volta no WhatsApp
 
-### 6. (Opcional) Instale o Appium para automação mais robusta
+---
 
-```bash
-npm install -g appium
-appium driver install uiautomator2
-appium &   # Inicia o servidor Appium em background
-```
+## Adicionar nova prefeitura
 
-## 🔍 Como Capturar Elementos do App Android (SPX Driver)
-
-### Via ADB UIAutomator Dump (sem Appium)
-
-```bash
-# Com o app SPX Driver aberto na tela desejada:
-adb shell uiautomator dump /sdcard/screen.xml
-adb pull /sdcard/screen.xml .
-cat screen.xml | grep -i "text\|resource-id\|content-desc"
-```
-
-### Via Appium Inspector (recomendado)
-
-1. Baixe: https://github.com/appium/appium-inspector/releases
-2. Configure a conexão:
-   - Remote Host: `127.0.0.1`
-   - Remote Port: `4723`
-   - Capabilities:
-     ```json
-     {
-       "platformName": "Android",
-       "appium:automationName": "UiAutomator2",
-       "appium:deviceName": "SEU_DISPOSITIVO",
-       "appium:appPackage": "com.shopee.spxdriver",
-       "appium:appActivity": ".MainActivity",
-       "appium:noReset": true
-     }
-     ```
-3. Clique em **Start Session** e inspecione os elementos
-
-### Via ADB Screenshot + UI Viewer
-
-```bash
-adb exec-out screencap -p > screenshot.png
-# Use o Android Studio ou o uiautomatorviewer para inspecionar
-```
-
-## 🌐 Como Localizar Elementos no Site da NFS-e
-
-### Método recomendado com Playwright
+1. Crie `app/adapters/novacidade_adapter.py` implementando `BaseNfseAdapter`
+2. Registre no `app/adapters/__init__.py`
 
 ```python
-# Abra o Playwright em modo headful para inspecionar
-from playwright.sync_api import sync_playwright
+from app.adapters.novacidade_adapter import NovaCidadeAdapter
 
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=False, slow_mo=500)
-    page = browser.new_page()
-    page.goto("https://SEU_MUNICIPIO.nfse.gov.br")
-
-    # Use o DevTools do navegador para inspecionar elementos
-    # F12 → Inspector → clique no elemento → copie o seletor
-    input("Pressione Enter para fechar...")
-    browser.close()
-```
-
-### Seletores mais comuns encontrados em portais NFS-e
-
-```python
-# Campos típicos (adapte ao seu município)
-SELETORES = {
-    "login_cpf_cnpj": "input[name='usuario']",
-    "login_senha": "input[type='password']",
-    "btn_login": "button[type='submit']",
-    "menu_emitir": "a:has-text('Emitir')",
-    "campo_valor": "input[id*='valor']",
-    "campo_descricao": "textarea[id*='descricao']",
-    "btn_confirmar": "button:has-text('Confirmar')",
-    "btn_download_pdf": "a:has-text('PDF')",
-    "btn_download_xml": "a:has-text('XML')",
+_REGISTRY = {
+    ...
+    NovaCidadeAdapter().municipality_key: NovaCidadeAdapter(),
 }
 ```
 
-## ▶️ Como Executar
+---
 
-```bash
-# Execução completa automática
-python main.py
+## Endpoints
 
-# Modo semi-automático (pausa para confirmação)
-python main.py --semi-auto
+| Metodo | Rota | Descricao |
+|---|---|---|
+| GET | `/health` | Status da API e conexao WhatsApp |
+| POST | `/webhook` | Recebe eventos da Evolution API |
+| GET | `/docs` | Swagger (apenas com DEBUG=true) |
 
-# Apenas ler ganhos do SPX (sem emitir nota)
-python main.py --apenas-leitura
+---
 
-# Apenas emitir nota com valor manual
-python main.py --valor 350.00
+## Migracao para PostgreSQL
 
-# Exportar histórico para Excel
-python main.py --exportar-excel
+Altere apenas `DATABASE_URL` no `.env`:
+
+```
+DATABASE_URL=postgresql+asyncpg://user:senha@host:5432/nfse
 ```
 
-## 🕐 Agendar Execução Toda Segunda-feira
-
 ```bash
-# Execute o script de agendamento
-chmod +x scripts/agendar_cron.sh
-./scripts/agendar_cron.sh
-
-# Ou adicione manualmente ao crontab:
-crontab -e
-# Adicione a linha:
-# 0 9 * * 1 /caminho/para/venv/bin/python /caminho/para/main.py >> /caminho/para/logs/cron.log 2>&1
+pip install asyncpg
+make migrate
 ```
 
-## 📊 Histórico e Exportação
+Nenhum outro codigo precisa ser alterado.
 
-O histórico fica salvo em `data/historico.csv` e pode ser exportado:
+---
 
-```bash
-python main.py --exportar-excel   # Gera data/historico_notas.xlsx
-python main.py --exportar-csv     # Atualiza data/historico.csv
-```
+## Roadmap
 
-## 🛡️ Boas Práticas de Segurança
-
-- Nunca versione o arquivo `.env` (já está no `.gitignore`)
-- Use senhas únicas para automação
-- Mantenha logs de auditoria
-- Sempre confirme manualmente antes do envio final
-- Prefira modo `--semi-auto` até ter confiança total no fluxo
+- [ ] Criptografia de senhas armazenadas (Fernet)
+- [ ] Adapter Campinas (campinas.nfse.com.br)
+- [ ] Adapter Sao Paulo (nfe.prefeitura.sp.gov.br)
+- [ ] Fila de tarefas com ARQ
+- [ ] Multi-tenant com planos e limites de emissao
+- [ ] CI/CD com GitHub Actions

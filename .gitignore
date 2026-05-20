@@ -1,15 +1,21 @@
-# Variáveis sensíveis - NUNCA versionar!
+# Sensitive — never commit
 .env
 
-# Ambiente virtual Python
-venv/
-env/
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Logs e outputs (dados pessoais)
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Runtime output (contains personal data)
 logs/
 output/
 data/
@@ -18,15 +24,12 @@ data/
 .vscode/
 .idea/
 *.swp
+*.swo
 
-# Sistema operacional
+# OS
 .DS_Store
 Thumbs.db
-venv/
+
+# Node (cleanup script remnant)
 node_modules/
-__pycache__/
-*.pyc
-.env
-.DS_Store
-logs/
-output/
+package-lock.json
