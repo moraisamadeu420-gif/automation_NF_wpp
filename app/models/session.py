@@ -19,8 +19,8 @@ class ConversationState(str, Enum):
     ONBOARDING_PASSWORD = "onboarding_password"
     ONBOARDING_MUNICIPALITY = "onboarding_municipality"
     ONBOARDING_CNPJ = "onboarding_cnpj"
-    AWAITING_IMAGE = "awaiting_image"
-    AWAITING_VALUE_CONFIRM = "awaiting_value_confirm"
+    AWAITING_VALUE = "awaiting_value"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
     PROCESSING = "processing"
 
 

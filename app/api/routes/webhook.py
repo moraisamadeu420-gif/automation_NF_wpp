@@ -101,10 +101,6 @@ async def receive_webhook(
     include_in_schema=False,
 )
 async def webhook_debug(request: Request) -> dict:
-    """
-    Temporary debug endpoint — point Evolution API here to inspect the
-    exact payload structure it sends. Remove after debugging.
-    """
     body_bytes = await request.body()
     headers = dict(request.headers)
     try:
@@ -115,3 +111,15 @@ async def webhook_debug(request: Request) -> dict:
     logger.info("DEBUG webhook — headers: {}", {k: v for k, v in headers.items() if "key" not in k.lower()})
     logger.info("DEBUG webhook — body: {}", str(body)[:2000])
     return {"received": True, "event": body.get("event") if isinstance(body, dict) else None}
+
+
+@router.post(
+    "/trigger-weekly-prompt",
+    include_in_schema=False,
+)
+async def trigger_weekly_prompt(background_tasks: BackgroundTasks) -> dict:
+    """Dev/test endpoint — runs the Monday scheduler job immediately."""
+    from app.workers.scheduler import weekly_prompt_job
+    background_tasks.add_task(weekly_prompt_job)
+    logger.info("Manual trigger: weekly_prompt_job queued")
+    return {"status": "queued", "job": "weekly_prompt_job"}

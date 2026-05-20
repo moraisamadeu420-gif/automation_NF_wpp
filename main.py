@@ -12,12 +12,14 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
 
 from app.api.middleware import RateLimitMiddleware, RequestLoggingMiddleware
 from app.api.routes import health, webhook
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.database.connection import create_tables
+from app.workers.scheduler import create_scheduler
 
 
 @asynccontextmanager
@@ -25,7 +27,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging()
     settings.ensure_directories()
     await create_tables()
+
+    scheduler = create_scheduler()
+    scheduler.start()
+    logger.info("Scheduler started — weekly NFSe prompt every Monday at 09:00 BRT")
+
     yield
+
+    scheduler.shutdown()
+    logger.info("Scheduler stopped")
 
 
 def create_app() -> FastAPI:

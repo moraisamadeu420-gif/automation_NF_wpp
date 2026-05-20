@@ -3,35 +3,29 @@ app/services/message_processor.py
 State-machine that drives the WhatsApp conversation flow.
 
 States:
-  IDLE                → user sends anything → check credentials
+  IDLE                → check credentials; show menu
   ONBOARDING_*        → multi-step credential collection
-  AWAITING_IMAGE      → user must send a screenshot
-  AWAITING_VALUE_CONFIRM → user confirms the OCR-extracted value
-  PROCESSING          → emission is running (guard against duplicate triggers)
+  AWAITING_VALUE      → scheduler (or user) triggered; waiting for monetary value
+  AWAITING_VALUE_CONFIRM → user confirms the value and period
+  PROCESSING          → Playwright emission running (guard against duplicates)
 """
-import json
-from pathlib import Path
+import re
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import (
-    CredentialNotFoundError,
-    NfseEmissionError,
-    OcrExtractionError,
-)
+from app.core.exceptions import CredentialNotFoundError, NfseEmissionError
 from app.integrations.evolution.client import evolution_client
 from app.integrations.evolution.schemas import WebhookMessage
 from app.models.session import ConversationState
 from app.repositories.session_repository import SessionRepository
 from app.services.nfse_service import NfseService
-from app.services.ocr_service import ocr_service
 from app.services.user_service import UserService
-from app.utils.file_utils import cleanup_file, save_bytes_to_temp
+from app.utils.period import format_period, previous_week_period
 
 _MENU = (
     "Ola! Escolha uma opcao:\n"
-    "1 - Emitir NFS-e (envie print do SPX Driver)\n"
+    "1 - Emitir NFS-e da semana\n"
     "2 - Ver historico de notas\n"
     "3 - Reconfigurar credenciais\n"
     "4 - Ajuda"
@@ -54,6 +48,19 @@ _PORTAL_MENU = (
     "2 - Prefeitura de Campinas\n"
     "3 - Outro (informe a URL)"
 )
+
+
+def _parse_value(text: str) -> float | None:
+    cleaned = re.sub(r"[^\d,.]", "", text)
+    if "," in cleaned and "." in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(",", ".")
+    try:
+        v = float(cleaned)
+        return v if v > 0 else None
+    except ValueError:
+        return None
 
 
 class MessageProcessor:
@@ -79,25 +86,21 @@ class MessageProcessor:
         if not message.message:
             logger.debug("Skipping message with empty content — id: {}", msg_id)
             return
-
-        # Ignore group messages
         if "@g.us" in number:
             logger.debug("Skipping group message from {}", number)
             return
 
         sender = number.split("@")[0]
-
-        user, created = await self._users.get_or_create_user(sender, message.push_name)
+        user, _ = await self._users.get_or_create_user(sender, message.push_name)
         conv = await self._sessions.get_or_create(user.id)
 
         state = ConversationState(conv.state)
         text = (message.message.text or "").strip()
-        has_image = message.message.has_image
 
         logger.info("Message from {} | state: {} | text: '{}'", sender, state, text[:80])
 
         if state == ConversationState.IDLE:
-            await self._handle_idle(sender, user, conv, text, has_image, message)
+            await self._handle_idle(sender, user, conv, text)
         elif state == ConversationState.ONBOARDING_NAME:
             await self._handle_onboarding_name(sender, user, conv, text)
         elif state == ConversationState.ONBOARDING_PORTAL:
@@ -110,16 +113,16 @@ class MessageProcessor:
             await self._handle_onboarding_municipality(sender, user, conv, text)
         elif state == ConversationState.ONBOARDING_CNPJ:
             await self._handle_onboarding_cnpj(sender, user, conv, text)
-        elif state == ConversationState.AWAITING_IMAGE:
-            await self._handle_awaiting_image(sender, user, conv, text, has_image, message)
-        elif state == ConversationState.AWAITING_VALUE_CONFIRM:
+        elif state == ConversationState.AWAITING_VALUE:
+            await self._handle_awaiting_value(sender, user, conv, text)
+        elif state == ConversationState.AWAITING_CONFIRMATION:
             await self._handle_value_confirm(sender, user, conv, text)
         elif state == ConversationState.PROCESSING:
             await evolution_client.send_text(sender, "Sua nota esta sendo processada. Aguarde.")
 
     # ── IDLE ─────────────────────────────────────────────────────────────────
 
-    async def _handle_idle(self, sender, user, conv, text, has_image, message) -> None:
+    async def _handle_idle(self, sender, user, conv, text) -> None:
         is_configured = await self._users.user_is_configured(user.id)
 
         if not is_configured:
@@ -127,12 +130,8 @@ class MessageProcessor:
             await evolution_client.send_text(sender, _ONBOARDING_WELCOME)
             return
 
-        if has_image or text in ("1", "emitir", "nota", "nfse"):
-            await self._sessions.transition(conv, ConversationState.AWAITING_IMAGE)
-            if has_image:
-                await self._handle_awaiting_image(sender, user, conv, text, has_image, message)
-            else:
-                await evolution_client.send_text(sender, "Envie o print do seu ganhos no SPX Driver.")
+        if text in ("1", "emitir", "nota", "nfse"):
+            await self._ask_for_value(sender, conv)
             return
 
         if text == "2":
@@ -145,6 +144,16 @@ class MessageProcessor:
             return
 
         await evolution_client.send_text(sender, _MENU)
+
+    async def _ask_for_value(self, sender: str, conv) -> None:
+        start, end = previous_week_period()
+        period_str = format_period(start, end)
+        ctx = {"periodo": period_str}
+        await self._sessions.transition(conv, ConversationState.AWAITING_VALUE, ctx)
+        await evolution_client.send_text(
+            sender,
+            f"Informe o valor dos ganhos da semana de {period_str}:",
+        )
 
     # ── ONBOARDING ────────────────────────────────────────────────────────────
 
@@ -235,68 +244,59 @@ class MessageProcessor:
             f"Configuracao concluida!\n\n"
             f"Portal: {ctx.get('portal_label', ctx.get('portal_type'))}\n"
             f"CNPJ: {text}\n\n"
-            "Agora envie o print dos seus ganhos no SPX Driver para emitir sua NFS-e."
+            "Toda segunda-feira as 9h voce recebera uma mensagem pedindo o valor da semana "
+            "para emissao automatica da NFS-e.\n\n"
+            "Ou envie '1' a qualquer momento para emitir manualmente."
         )
 
-    # ── AWAITING IMAGE ───────────────────────────────────────────────────────
+    # ── AWAITING VALUE ───────────────────────────────────────────────────────
 
-    async def _handle_awaiting_image(self, sender, user, conv, text, has_image, message) -> None:
-        if not has_image:
-            if text.lower() in ("cancelar", "cancel", "0"):
-                await self._sessions.reset(conv)
-                await evolution_client.send_text(sender, "Operacao cancelada. " + _MENU)
-                return
-            await evolution_client.send_text(sender, "Envie uma imagem do print do SPX Driver.")
+    async def _handle_awaiting_value(self, sender, user, conv, text) -> None:
+        if text.upper() in ("CANCELAR", "CANCEL", "0"):
+            await self._sessions.reset(conv)
+            await evolution_client.send_text(sender, "Operacao cancelada. " + _MENU)
             return
 
-        await evolution_client.send_text(sender, "Imagem recebida. Lendo ganhos...")
-
-        image_path: Path | None = None
-        try:
-            img_bytes = await evolution_client.download_media(message.key.id)
-            image_path = save_bytes_to_temp(img_bytes, suffix=".jpg")
-            data = await ocr_service.extract_earnings_from_image(image_path)
-        except OcrExtractionError as exc:
-            logger.warning("OCR failed for {}: {}", sender, exc)
+        value = _parse_value(text)
+        if value is None:
             await evolution_client.send_text(
                 sender,
-                "Nao consegui ler o valor da imagem. Tente novamente com uma imagem mais clara."
+                "Nao consegui identificar o valor. Informe apenas o numero (ex: 697,08).",
             )
             return
-        finally:
-            cleanup_file(image_path)
 
-        ctx = {"valor": data["valor"], "periodo": data["periodo"]}
-        await self._sessions.transition(conv, ConversationState.AWAITING_VALUE_CONFIRM, ctx)
+        ctx = await self._sessions.get_context(conv)
+        period_str = ctx.get("periodo") or format_period(*previous_week_period())
+        ctx.update({"valor": value, "periodo": period_str})
+        await self._sessions.transition(conv, ConversationState.AWAITING_CONFIRMATION, ctx)
+
+        valor_fmt = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         await evolution_client.send_text(
             sender,
-            f"Encontrei os seguintes dados:\n"
-            f"Valor: R$ {data['valor']:.2f}\n"
-            f"Periodo: {data['periodo']}\n\n"
-            "Confirma a emissao da NFS-e?\n"
-            "Responda: SIM ou NAO"
+            f"Emitir NFS-e de R$ {valor_fmt} periodo {period_str}? Responda SIM para confirmar.",
         )
 
     # ── VALUE CONFIRMATION ───────────────────────────────────────────────────
 
     async def _handle_value_confirm(self, sender, user, conv, text) -> None:
-        if text.upper() not in ("SIM", "S", "NAO", "N", "NAO", "CANCELAR"):
+        upper = text.upper()
+        if upper not in ("SIM", "S", "NAO", "N", "CANCELAR"):
             await evolution_client.send_text(sender, "Responda SIM para confirmar ou NAO para cancelar.")
             return
 
-        if text.upper() in ("NAO", "N", "CANCELAR"):
+        if upper in ("NAO", "N", "CANCELAR"):
             await self._sessions.reset(conv)
-            await evolution_client.send_text(sender, "Emissao cancelada.")
+            await evolution_client.send_text(sender, "Emissao cancelada. " + _MENU)
             return
 
         ctx = await self._sessions.get_context(conv)
-        value = ctx.get("valor", 0)
-        period = ctx.get("periodo", "")
+        value: float = ctx.get("valor", 0)
+        period: str = ctx.get("periodo", "")
 
         await self._sessions.transition(conv, ConversationState.PROCESSING)
         await evolution_client.send_text(
             sender,
-            f"Iniciando emissao de R$ {value:.2f}...\nIsso pode levar 1-2 minutos."
+            f"Iniciando emissao de R$ {value:,.2f}...\nIsso pode levar 1-2 minutos.",
         )
 
         try:
@@ -304,7 +304,10 @@ class MessageProcessor:
         except (CredentialNotFoundError, NfseEmissionError) as exc:
             logger.error("Emission error for {}: {}", sender, exc)
             await self._sessions.reset(conv)
-            await evolution_client.send_text(sender, f"Erro ao emitir nota: {exc}\n\nTente novamente ou reconfigure com opcao 3.")
+            await evolution_client.send_text(
+                sender,
+                f"Erro ao emitir nota: {exc}\n\nTente novamente ou reconfigure com opcao 3.",
+            )
             return
 
         await self._sessions.reset(conv)
@@ -312,10 +315,11 @@ class MessageProcessor:
         reply = (
             f"NFS-e emitida com sucesso!\n"
             f"Nota N: {invoice.invoice_number or 'N/A'}\n"
-            f"Valor: R$ {value:.2f}\n"
+            f"Valor: R$ {value:,.2f}\n"
             f"Periodo: {period}"
         )
 
+        from pathlib import Path
         if invoice.pdf_path and Path(invoice.pdf_path).exists():
             await evolution_client.send_text(sender, reply)
             await evolution_client.send_pdf(
@@ -338,5 +342,5 @@ class MessageProcessor:
         lines = ["Ultimas 5 notas emitidas:\n"]
         for inv in invoices:
             status_label = "OK" if inv.status == "success" else "FALHOU"
-            lines.append(f"- Nota {inv.invoice_number or '?'} | R$ {inv.value:.2f} | {inv.period} | {status_label}")
+            lines.append(f"- Nota {inv.invoice_number or '?'} | R$ {inv.value:,.2f} | {inv.period} | {status_label}")
         await evolution_client.send_text(sender, "\n".join(lines))
