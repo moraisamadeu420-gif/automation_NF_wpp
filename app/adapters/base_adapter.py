@@ -20,7 +20,6 @@ class EmissionRequest:
     tomador_cnpj: str
     tomador_razao_social: str
     service_description: str
-    service_favorite_name: str
     aliquota_iss: float = 2.0
     headless: bool = True
     slow_mo: int = 300

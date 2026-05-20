@@ -49,7 +49,6 @@ class NfseService:
             tomador_cnpj=credential.tomador_cnpj or "",
             tomador_razao_social=credential.tomador_razao_social or "",
             service_description=self._build_description(credential.service_description, period),
-            service_favorite_name=credential.service_favorite_name or "",
             aliquota_iss=credential.service_aliquota_iss,
             headless=settings.browser_headless,
             slow_mo=settings.browser_slow_mo,

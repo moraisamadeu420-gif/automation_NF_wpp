@@ -220,7 +220,6 @@ class MessageProcessor:
         ctx["tomador_cnpj"] = "42.446.277/0001-92"
         ctx["tomador_razao_social"] = "SHOPEE COMERCIO DIGITAL DO BRASIL LTDA"
         ctx["service_description"] = "Servicos de entrega e logistica prestados como motorista parceiro SPX Driver"
-        ctx["service_favorite_name"] = ctx.get("nome", "").split()[0] if ctx.get("nome") else ""
         ctx["service_aliquota_iss"] = 2.0
 
         await self._users.save_credential(user.id, {
@@ -234,7 +233,6 @@ class MessageProcessor:
             "tomador_cnpj": ctx["tomador_cnpj"],
             "tomador_razao_social": ctx["tomador_razao_social"],
             "service_description": ctx["service_description"],
-            "service_favorite_name": ctx["service_favorite_name"],
             "service_aliquota_iss": ctx["service_aliquota_iss"],
         })
 
