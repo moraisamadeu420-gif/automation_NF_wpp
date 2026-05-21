@@ -3,9 +3,7 @@ app/adapters/nacional_adapter.py
 Adapter para o portal Emissor Nacional (nfse.gov.br).
 Seletores capturados via playwright codegen na emissão completa.
 """
-import random
 import re
-import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -16,34 +14,20 @@ from app.adapters.base_adapter import BaseNfseAdapter, EmissionRequest, Emission
 from app.core.config import settings
 from app.core.exceptions import NfseEmissionError
 
-# ── timing ────────────────────────────────────────────────────────────────────
 
-def _sleep(min_s: float, max_s: float) -> None:
-    time.sleep(random.uniform(min_s, max_s))
-
-def _curto() -> None:  _sleep(0.6, 1.2)
-def _medio() -> None:  _sleep(1.8, 3.0)
-def _longo() -> None:  _sleep(4.0, 6.0)
-
-
-def _screenshot(page: Page, label: str) -> None:
+def _screenshot(page: Page, label: str) -> str | None:
     try:
         path = settings.screenshots_path / f"{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         page.screenshot(path=str(path))
-        logger.info("Screenshot: {}", path.name)
+        logger.info("Screenshot erro: {}", path.name)
+        return str(path)
     except Exception:
-        pass
+        return None
 
-
-# ── constantes SPX Driver ────────────────────────────────────────────────────
 
 _PORTAL_URL   = "https://www.nfse.gov.br/EmissorNacional/Login"
 _TOMADOR_CNPJ = "42.446.277/0001-92"
-_COD_SERVICO  = "160201"           # fixo para motoristas SPX Driver
-_MUNICIPIO_OPCAO_SUFIXO = "/SP"   # ajuste se houver municípios de outros estados
 
-
-# ── adapter ───────────────────────────────────────────────────────────────────
 
 class NacionalAdapter(BaseNfseAdapter):
 
@@ -52,6 +36,10 @@ class NacionalAdapter(BaseNfseAdapter):
         return "nacional"
 
     def emit(self, request: EmissionRequest) -> EmissionResult:
+        if settings.dry_run:
+            logger.info("[DRY RUN] Simulando emissão — Playwright não será executado")
+            return EmissionResult(invoice_number="DRY-RUN-001", pdf_path=None, xml_path=None)
+
         settings.ensure_directories()
 
         with sync_playwright() as pw:
@@ -72,29 +60,19 @@ class NacionalAdapter(BaseNfseAdapter):
             page = context.new_page()
             try:
                 self._login(page, request)
-                _medio()
                 self._abrir_emissao_completa(page)
-                _medio()
-                self._preencher_dados_gerais(page, request)
-                _medio()
-                self._preencher_servico(page, request)
-                _medio()
-                self._preencher_tomador_e_valor(page, request)
-                _medio()
+                self._preencher_data_e_tomador(page, request)
+                self._preencher_municipio_servico_descricao(page, request)
+                self._preencher_valor(page, request)
                 self._emitir(page)
-                _medio()
                 numero = self._extrair_numero_nota(page)
-                pdf_path = self._baixar_pdf(page, numero)
-                return EmissionResult(
-                    invoice_number=numero,
-                    pdf_path=pdf_path,
-                    xml_path=None,
-                )
+                pdf_path = self._baixar_pdf(page, request)
+                return EmissionResult(invoice_number=numero, pdf_path=pdf_path, xml_path=None)
             except NfseEmissionError:
                 raise
             except Exception as exc:
-                _screenshot(page, "erro_geral")
-                raise NfseEmissionError(str(exc), stage="unknown") from exc
+                shot = _screenshot(page, "erro_geral")
+                raise NfseEmissionError(str(exc), stage="unknown", screenshot_path=shot) from exc
             finally:
                 context.close()
                 browser.close()
@@ -104,30 +82,29 @@ class NacionalAdapter(BaseNfseAdapter):
     def _login(self, page: Page, request: EmissionRequest) -> None:
         logger.info("Fazendo login...")
         try:
-            page.goto(_PORTAL_URL, wait_until="networkidle", timeout=30_000)
-            _medio()
+            page.goto(_PORTAL_URL, wait_until="networkidle", timeout=60_000)
 
-            f_usuario = page.get_by_role("textbox", name="CPF/CNPJ")
-            f_usuario.click()
-            _curto()
-            f_usuario.fill(request.username)
-            _curto()
-
-            f_senha = page.get_by_role("textbox", name="Senha")
-            f_senha.click()
-            _curto()
-            f_senha.fill(request.password)
-            _curto()
-
+            page.get_by_role("textbox", name="CPF/CNPJ").click()
+            page.get_by_role("textbox", name="CPF/CNPJ").fill(request.username)
+            page.get_by_role("textbox", name="Senha").click()
+            page.get_by_role("textbox", name="Senha").fill(request.password)
             page.get_by_role("button", name="Entrar").click()
-            page.wait_for_load_state("networkidle", timeout=20_000)
-            _medio()
-            logger.info("Login OK")
+
+            page.wait_for_load_state("networkidle", timeout=30_000)
+
+            if "login" in page.url.lower():
+                _screenshot(page, "login_falhou")
+                raise NfseEmissionError(
+                    "Credenciais invalidas ou sessao expirada. Verifique usuario e senha.",
+                    stage="login",
+                    critical=True,
+                )
+            logger.info("Login OK — URL: {}", page.url)
         except NfseEmissionError:
             raise
         except Exception as exc:
-            _screenshot(page, "login_erro")
-            raise NfseEmissionError(f"Falha no login: {exc}", stage="login") from exc
+            shot = _screenshot(page, "login_erro")
+            raise NfseEmissionError(f"Falha no login: {exc}", stage="login", critical=True, screenshot_path=shot) from exc
 
     # ── 2. abrir emissão completa ─────────────────────────────────────────────
 
@@ -135,140 +112,116 @@ class NacionalAdapter(BaseNfseAdapter):
         logger.info("Abrindo emissão completa...")
         try:
             page.get_by_role("button").filter(has_text="Nova NFS-e").click(timeout=60_000)
-            _medio()
-            page.get_by_role("link", name="Emissão completa").click()
-            page.wait_for_load_state("networkidle", timeout=15_000)
-            _medio()
-            _screenshot(page, "emissao_completa_aberta")
+            page.get_by_role("link", name="Emissão completa").click(timeout=60_000)
+            page.wait_for_load_state("domcontentloaded")
             logger.info("Formulário aberto")
         except NfseEmissionError:
             raise
         except Exception as exc:
-            _screenshot(page, "nav_erro")
-            raise NfseEmissionError(f"Falha ao abrir emissão: {exc}", stage="navigation") from exc
+            shot = _screenshot(page, "nav_erro")
+            raise NfseEmissionError(f"Falha ao abrir emissão: {exc}", stage="navigation", screenshot_path=shot) from exc
 
-    # ── 3. dados gerais (data + local de prestação) ───────────────────────────
+    # ── 3+4+5. data de competência + tomador + Avançar ────────────────────────
 
-    def _preencher_dados_gerais(self, page: Page, request: EmissionRequest) -> None:
-        logger.info("Preenchendo dados gerais...")
+    def _preencher_data_e_tomador(self, page: Page, request: EmissionRequest) -> None:
+        logger.info("Preenchendo data e tomador...")
         try:
-            # Data de competência — dia atual no formato dd/mm/aaaa
-            hoje = date.today().strftime("%d/%m/%Y")
-            f_data = page.locator("#DataCompetencia")
-            f_data.click()
-            _curto()
-            f_data.fill(hoje)
-            # Fecha o datepicker pressionando Tab se ele abrir
-            f_data.press("Tab")
-            _curto()
+            # Data de competência
+            dia_atual = date.today().day
+            page.locator("#btn_DataCompetencia").click(timeout=60_000)
+            page.get_by_role("cell", name=str(dia_atual)).click(timeout=60_000)
 
-            # Local de prestação — campo chosen dentro do painel #pnlLocalPrestacao
+            # Tomador — Pessoa Jurídica + CNPJ Shopee (fixo)
+            page.locator(
+                ".form-group.form-group-lg > .radio-options > div:nth-child(2) > label > .cr > .cr-icon"
+            ).first.click(timeout=60_000)
+            page.locator("#Tomador_Inscricao").click(timeout=60_000)
+            page.locator("#Tomador_Inscricao").fill(_TOMADOR_CNPJ)
+            page.locator("#btn_Tomador_Inscricao_pesquisar").click(timeout=60_000)
+            page.wait_for_load_state("networkidle", timeout=30_000)
+
+            # Avança para a etapa de município/serviço
+            page.get_by_role("button", name="Avançar").click(timeout=60_000)
+            page.wait_for_load_state("domcontentloaded")
+
+            logger.info("Data dia {} | Tomador {} preenchidos", dia_atual, _TOMADOR_CNPJ)
+        except NfseEmissionError:
+            raise
+        except Exception as exc:
+            shot = _screenshot(page, "data_tomador_erro")
+            raise NfseEmissionError(f"Falha na data/tomador: {exc}", stage="dados_gerais", critical=True, screenshot_path=shot) from exc
+
+    # ── 6+7+8. município + serviço + descrição + Avançar ─────────────────────
+
+    def _preencher_municipio_servico_descricao(self, page: Page, request: EmissionRequest) -> None:
+        logger.info("Preenchendo município, serviço e descrição...")
+        try:
+            # Município
             municipio = request.municipio.split("/")[0].strip()
-            painel = page.locator("#pnlLocalPrestacao")
-            chosen = painel.locator("[class*='chosen-container']").first
-            chosen.locator("a, .chosen-single").click()
-            _curto()
-            chosen.get_by_role("textbox").fill(municipio)
-            _curto()
-            page.locator(".chosen-results li").filter(has_text=municipio).first.click()
-            _curto()
+            page.locator("#pnlLocalPrestacao").get_by_label("").click(timeout=60_000)
+            page.get_by_role("searchbox", name="Search").fill(municipio)
+            page.get_by_role("option", name=f"{municipio}/SP").click(timeout=60_000)
 
-            _screenshot(page, "dados_gerais_ok")
-            logger.info("Data {} | Município {}", hoje, _MUNICIPIO_OPCAO)
-
-            self._avancar_se_existir(page)
-        except NfseEmissionError:
-            raise
-        except Exception as exc:
-            _screenshot(page, "dados_gerais_erro")
-            raise NfseEmissionError(f"Falha nos dados gerais: {exc}", stage="dados_gerais") from exc
-
-    # ── 4. serviço ────────────────────────────────────────────────────────────
-
-    def _preencher_servico(self, page: Page, request: EmissionRequest) -> None:
-        logger.info("Preenchendo serviço — código {}", _COD_SERVICO)
-        try:
-            # Campo de busca do serviço — digita o código e aguarda autocomplete
-            f_servico = page.locator("#ServicoPrestado_Descricao")
-            f_servico.click()
-            _curto()
-            f_servico.fill(_COD_SERVICO)
-            _medio()
-
-            # Seleciona o primeiro resultado do autocomplete
-            page.locator("ul.ui-autocomplete li.ui-menu-item").first.click()
-            _curto()
-
-            _screenshot(page, "servico_selecionado")
-            logger.info("Serviço {} selecionado", _COD_SERVICO)
-
-            self._avancar_se_existir(page)
-        except NfseEmissionError:
-            raise
-        except Exception as exc:
-            _screenshot(page, "servico_erro")
-            raise NfseEmissionError(f"Falha ao preencher serviço: {exc}", stage="servico") from exc
-
-    # ── 5. tomador + descrição + valor ────────────────────────────────────────
-
-    def _preencher_tomador_e_valor(self, page: Page, request: EmissionRequest) -> None:
-        logger.info("Preenchendo tomador e valor R$ {:.2f}...", request.value)
-        try:
-            # CNPJ tomador (Shopee — fixo)
-            f_cnpj = page.locator("#InscricaoCliente")
-            f_cnpj.click()
-            _curto()
-            f_cnpj.fill(_TOMADOR_CNPJ)
-            _curto()
-            page.locator("#btn_InscricaoCliente_pesquisar").click()
-            _medio()
+            # Código do serviço — digita e pressiona Enter
+            page.get_by_label("", exact=True).click(timeout=60_000)
+            page.get_by_role("searchbox", name="Search").fill("160201")
+            page.get_by_role("searchbox", name="Search").press("Enter")
 
             # Descrição
             descricao = (
                 f"Nota referente aos serviços de entregas prestados "
                 f"no período de {request.period}."
             )
-            f_desc = page.locator("#Descricao")
-            f_desc.click()
-            _curto()
-            f_desc.fill(descricao)
-            _curto()
+            page.locator("i").nth(1).click(timeout=60_000)
+            page.locator("#ServicoPrestado_Descricao").click(timeout=60_000)
+            page.locator("#ServicoPrestado_Descricao").fill(descricao)
 
-            # Valor
-            valor_fmt = f"{request.value:.2f}".replace(".", ",")
-            f_valor = page.locator("#Valores_ValorServico")
-            f_valor.click()
-            _curto()
-            f_valor.fill(valor_fmt)
-            _curto()
+            page.get_by_role("button", name="Avançar").click(timeout=60_000)
+            page.wait_for_load_state("domcontentloaded")
 
-            _screenshot(page, "tomador_valor_ok")
-            logger.info("Tomador + valor {} preenchidos", valor_fmt)
-
-            self._avancar_se_existir(page)
+            logger.info("Município {}/SP | Serviço 160201 | Descrição preenchida", municipio)
         except NfseEmissionError:
             raise
         except Exception as exc:
-            _screenshot(page, "tomador_valor_erro")
-            raise NfseEmissionError(f"Falha ao preencher tomador/valor: {exc}", stage="tomador_valor") from exc
+            shot = _screenshot(page, "municipio_servico_erro")
+            raise NfseEmissionError(
+                f"Falha no município/serviço/descrição: {exc}", stage="servico", screenshot_path=shot
+            ) from exc
 
-    # ── 6. emitir ─────────────────────────────────────────────────────────────
+    # ── 9. valor + Avançar ────────────────────────────────────────────────────
+
+    def _preencher_valor(self, page: Page, request: EmissionRequest) -> None:
+        logger.info("Preenchendo valor R$ {:.2f}...", request.value)
+        try:
+            valor_fmt = f"{request.value:.2f}".replace(".", ",")
+            page.locator("#Valores_ValorServico").click(timeout=60_000)
+            page.locator("#Valores_ValorServico").fill(valor_fmt)
+            page.get_by_role("button", name="Avançar").click(timeout=60_000)
+            page.wait_for_load_state("domcontentloaded")
+            logger.info("Valor {} preenchido", valor_fmt)
+        except NfseEmissionError:
+            raise
+        except Exception as exc:
+            shot = _screenshot(page, "valor_erro")
+            raise NfseEmissionError(
+                f"Falha ao preencher valor: {exc}", stage="tomador_valor", critical=True, screenshot_path=shot
+            ) from exc
+
+    # ── 10. emitir ────────────────────────────────────────────────────────────
 
     def _emitir(self, page: Page) -> None:
         logger.info("Emitindo NFS-e...")
         try:
-            page.get_by_role("button", name="Emitir").click()
-            page.wait_for_load_state("networkidle", timeout=30_000)
-            _longo()
-            _screenshot(page, "pos_emissao")
+            page.locator("#btnProsseguir").click(timeout=60_000)
+            page.wait_for_load_state("networkidle", timeout=60_000)
             logger.info("NFS-e emitida")
         except NfseEmissionError:
             raise
         except Exception as exc:
-            _screenshot(page, "emissao_erro")
-            raise NfseEmissionError(f"Falha ao emitir: {exc}", stage="submit") from exc
+            shot = _screenshot(page, "emissao_erro")
+            raise NfseEmissionError(f"Falha ao emitir: {exc}", stage="submit", screenshot_path=shot) from exc
 
-    # ── 7. número da nota ─────────────────────────────────────────────────────
+    # ── número da nota ────────────────────────────────────────────────────────
 
     def _extrair_numero_nota(self, page: Page) -> str | None:
         for selector in [
@@ -289,32 +242,19 @@ class NacionalAdapter(BaseNfseAdapter):
         logger.warning("Número da nota não encontrado")
         return None
 
-    # ── 8. PDF ────────────────────────────────────────────────────────────────
+    # ── 11. baixar PDF ────────────────────────────────────────────────────────
 
-    def _baixar_pdf(self, page: Page, numero: str | None) -> Path | None:
+    def _baixar_pdf(self, page: Page, request: EmissionRequest) -> Path | None:
         logger.info("Baixando PDF...")
-        sufixo = numero or datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest = settings.pdf_path / f"nfse_{sufixo}.pdf"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = settings.pdf_path / f"{request.user_id}_{timestamp}.pdf"
         try:
-            with page.expect_download(timeout=30_000) as dl:
-                page.locator("a[href*='DANFSe'], a[href*='danfse' i]").first.click()
-            dl.value.save_as(str(dest))
-            logger.info("PDF: {}", dest.name)
+            with page.expect_download(timeout=30_000) as download_info:
+                page.get_by_role("link", name="Baixar DANFSe").click(timeout=60_000)
+            download_info.value.save_as(str(dest))
+            logger.info("PDF salvo: {}", dest.name)
             return dest
         except Exception as exc:
             _screenshot(page, "pdf_erro")
             logger.warning("Falha ao baixar PDF: {}", exc)
             return None
-
-    # ── helper: avança no wizard se o botão existir ───────────────────────────
-
-    @staticmethod
-    def _avancar_se_existir(page: Page) -> None:
-        try:
-            btn = page.get_by_role("button", name=re.compile(r"Avançar|Próximo|Next", re.I))
-            if btn.is_visible(timeout=2_000):
-                btn.click()
-                page.wait_for_load_state("networkidle", timeout=10_000)
-                _medio()
-        except Exception:
-            pass  # sem botão Avançar — formulário é single-page

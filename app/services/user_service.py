@@ -9,6 +9,7 @@ from app.models.credential import NfseCredential
 from app.models.user import User
 from app.repositories.credential_repository import CredentialRepository
 from app.repositories.user_repository import UserRepository
+from app.utils.crypto import encrypt
 
 
 class UserService:
@@ -28,10 +29,20 @@ class UserService:
         return await self._credentials.get_active_by_user(user_id)
 
     async def save_credential(self, user_id: int, credential_data: dict) -> NfseCredential:
-        await self._credentials.deactivate_all_for_user(user_id)
-        credential = NfseCredential(user_id=user_id, **credential_data)
+        data = dict(credential_data)
+        if "password" in data:
+            data["password"] = encrypt(data["password"])
+
+        existing = await self._credentials.get_active_by_user(user_id)
+        if existing:
+            for key, value in data.items():
+                setattr(existing, key, value)
+            await self._credentials.save(existing)
+            logger.info("Credential updated for user {}", user_id)
+            return existing
+        credential = NfseCredential(user_id=user_id, **data)
         await self._credentials.save(credential)
-        logger.info("Credential saved for user {}", user_id)
+        logger.info("Credential created for user {}", user_id)
         return credential
 
     async def user_is_configured(self, user_id: int) -> bool:

@@ -18,7 +18,7 @@ from app.api.middleware import RateLimitMiddleware, RequestLoggingMiddleware
 from app.api.routes import health, webhook
 from app.core.config import settings
 from app.core.logging import configure_logging
-from app.database.connection import create_tables
+from app.database.connection import create_tables, upgrade_schema
 from app.workers.scheduler import create_scheduler
 
 
@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging()
     settings.ensure_directories()
     await create_tables()
+    await upgrade_schema()
 
     scheduler = create_scheduler()
     scheduler.start()

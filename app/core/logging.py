@@ -29,12 +29,12 @@ def configure_logging() -> None:
     logger.add(
         str(log_file),
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}",
-        level="DEBUG",
+        level="INFO",
         rotation="00:00",
-        retention="30 days",
+        retention="7 days",
         encoding="utf-8",
         backtrace=True,
-        diagnose=True,
+        diagnose=False,
     )
 
     logger.debug("Logging configured — file: {}", log_file)

@@ -35,10 +35,6 @@ class Settings(BaseSettings):
     evolution_api_key: str = ""
     evolution_instance: str = "nfse-bot"
 
-    # Groq (OCR / Vision)
-    groq_api_key: str = ""
-    groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
-
     # Browser / Playwright
     browser_headless: bool = True
     browser_slow_mo: int = 300
@@ -47,6 +43,7 @@ class Settings(BaseSettings):
     # Security
     webhook_secret: str = ""
     internal_api_key: str = ""
+    encryption_key: str = ""
 
     # Development
     dry_run: bool = False

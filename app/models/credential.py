@@ -21,23 +21,21 @@ class NfseCredential(Base):
     municipality: Mapped[str] = mapped_column(String(100))
     portal_url: Mapped[str] = mapped_column(Text)
 
-    # Login credentials (password stored as plain text for now; encrypt in production)
+    # Login credentials (password encrypted with Fernet — see app/utils/crypto.py)
     username: Mapped[str] = mapped_column(String(100))
     password: Mapped[str] = mapped_column(Text)
 
     # Prestador data
     prestador_nome: Mapped[str | None] = mapped_column(String(200))
     prestador_cnpj: Mapped[str | None] = mapped_column(String(20))
-    prestador_cpf: Mapped[str | None] = mapped_column(String(14))
 
-    # Tomador defaults (e.g. Shopee)
+    # Tomador defaults (Shopee)
     tomador_cnpj: Mapped[str | None] = mapped_column(String(20))
     tomador_razao_social: Mapped[str | None] = mapped_column(String(200))
 
     # Service defaults
     service_description: Mapped[str | None] = mapped_column(Text)
     service_aliquota_iss: Mapped[float] = mapped_column(default=2.0)
-    service_favorite_name: Mapped[str | None] = mapped_column(String(100))
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

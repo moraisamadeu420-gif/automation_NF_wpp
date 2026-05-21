@@ -92,6 +92,3 @@ class WebhookEvent(BaseModel):
 
         return messages
 
-    def to_message(self) -> WebhookMessage | None:
-        msgs = self.extract_messages()
-        return msgs[0] if msgs else None

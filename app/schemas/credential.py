@@ -15,7 +15,6 @@ class CredentialCreate(BaseModel):
     tomador_cnpj: str | None = None
     tomador_razao_social: str | None = None
     service_description: str | None = None
-    service_favorite_name: str | None = None
     service_aliquota_iss: float = 2.0
 
 

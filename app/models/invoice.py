@@ -35,6 +35,11 @@ class Invoice(Base):
     pdf_path: Mapped[str | None] = mapped_column(Text)
     xml_path: Mapped[str | None] = mapped_column(Text)
 
+    # Failure diagnostics
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    failed_stage: Mapped[str | None] = mapped_column(String(50))
+    screenshot_path: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

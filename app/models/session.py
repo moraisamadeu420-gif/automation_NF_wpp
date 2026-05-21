@@ -14,12 +14,10 @@ from app.database.connection import Base
 class ConversationState(str, Enum):
     IDLE = "idle"
     ONBOARDING_NAME = "onboarding_name"
-    ONBOARDING_PORTAL = "onboarding_portal"
     ONBOARDING_USERNAME = "onboarding_username"
     ONBOARDING_PASSWORD = "onboarding_password"
-    ONBOARDING_MUNICIPALITY = "onboarding_municipality"
-    ONBOARDING_CNPJ = "onboarding_cnpj"
     ONBOARDING_CITY = "onboarding_city"
+    ONBOARDING_CONFIRM = "onboarding_confirm"
     AWAITING_VALUE = "awaiting_value"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
     PROCESSING = "processing"

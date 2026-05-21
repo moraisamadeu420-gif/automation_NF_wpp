@@ -24,3 +24,6 @@ pytz>=2024.1
 
 # Logging
 loguru>=0.7.2
+
+# Encryption
+cryptography>=42.0.0

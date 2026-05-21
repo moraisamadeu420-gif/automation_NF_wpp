@@ -81,6 +81,22 @@ class EvolutionClient:
             b64 = b64.split(",", 1)[1]
         return base64.b64decode(b64)
 
+    async def delete_message(self, remote_jid: str, msg_id: str) -> None:
+        """Tenta deletar mensagem via Evolution API. Silencioso em erros.
+        Nota: WhatsApp não permite deletar mensagens recebidas de terceiros —
+        esta chamada funciona apenas para mensagens enviadas pelo próprio bot."""
+        if self._dry_run:
+            logger.info("[DRY RUN] delete_message → jid: {} | id: {}", remote_jid, msg_id)
+            return
+        url = f"{self._base_url}/chat/deleteMessage/{self._instance}"
+        payload = {"id": msg_id, "fromMe": False, "remoteJid": remote_jid}
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.delete(url, headers=self._headers, json=payload)
+            logger.debug("delete_message → status: {} | body: {}", response.status_code, response.text[:120])
+        except Exception as exc:
+            logger.debug("delete_message falhou (ignorado): {}", exc)
+
     async def check_connection(self) -> bool:
         if self._dry_run:
             return True

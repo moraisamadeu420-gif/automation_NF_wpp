@@ -24,6 +24,7 @@ class EmissionRequest:
     aliquota_iss: float = 2.0
     headless: bool = True
     slow_mo: int = 300
+    user_id: int = 0
 
 
 @dataclass

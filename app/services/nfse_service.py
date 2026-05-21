@@ -16,7 +16,7 @@ from app.core.exceptions import CredentialNotFoundError, NfseEmissionError
 from app.models.invoice import Invoice, InvoiceStatus
 from app.repositories.credential_repository import CredentialRepository
 from app.repositories.invoice_repository import InvoiceRepository
-from app.utils.retry import retry
+from app.utils.crypto import decrypt
 
 
 class NfseService:
@@ -42,7 +42,7 @@ class NfseService:
             value=value,
             period=period,
             username=credential.username,
-            password=credential.password,
+            password=decrypt(credential.password),
             portal_url=credential.portal_url,
             prestador_nome=credential.prestador_nome or "",
             prestador_cnpj=credential.prestador_cnpj or "",
@@ -53,6 +53,7 @@ class NfseService:
             aliquota_iss=credential.service_aliquota_iss,
             headless=settings.browser_headless,
             slow_mo=settings.browser_slow_mo,
+            user_id=user_id,
         )
 
         adapter = get_adapter(credential.portal_type)
@@ -60,13 +61,17 @@ class NfseService:
         try:
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
-                self._run_with_retry,
-                adapter,
+                adapter.emit,
                 request,
             )
         except NfseEmissionError as exc:
-            logger.error("Emission failed for user {}: {}", user_id, exc)
-            await self._invoices.mark_failed(invoice, str(exc))
+            logger.error("Emission failed for user {} at stage '{}': {}", user_id, exc.stage, exc)
+            await self._invoices.mark_failed(
+                invoice,
+                str(exc),
+                stage=exc.stage,
+                screenshot_path=exc.screenshot_path,
+            )
             raise
 
         await self._invoices.mark_success(
@@ -81,13 +86,6 @@ class NfseService:
             user_id, result.invoice_number, value,
         )
         return invoice
-
-    @staticmethod
-    def _run_with_retry(adapter, request: EmissionRequest):
-        @retry(attempts=settings.retry_attempts, delay=settings.retry_delay, exceptions=(NfseEmissionError,))
-        def _emit():
-            return adapter.emit(request)
-        return _emit()
 
     @staticmethod
     def _build_description(template: str | None, period: str) -> str:
