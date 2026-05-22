@@ -93,11 +93,12 @@ class NacionalAdapter(BaseNfseAdapter):
             page.wait_for_load_state("networkidle", timeout=30_000)
 
             if "login" in page.url.lower():
-                _screenshot(page, "login_falhou")
+                shot = _screenshot(page, "login_falhou")
                 raise NfseEmissionError(
                     "Credenciais invalidas ou sessao expirada. Verifique usuario e senha.",
                     stage="login",
                     critical=True,
+                    screenshot_path=shot,
                 )
             logger.info("Login OK — URL: {}", page.url)
         except NfseEmissionError:
@@ -181,7 +182,7 @@ class NacionalAdapter(BaseNfseAdapter):
             page.get_by_role("button", name="Avançar").click(timeout=60_000)
             page.wait_for_load_state("domcontentloaded")
 
-            logger.info("Município {}/SP | Serviço 160201 | Descrição preenchida", municipio)
+            logger.info("Município {}/{} | Serviço 160201 | Descrição preenchida", municipio_cidade, municipio_estado)
         except NfseEmissionError:
             raise
         except Exception as exc:
