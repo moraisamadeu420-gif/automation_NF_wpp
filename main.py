@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.api.middleware import RateLimitMiddleware, RequestLoggingMiddleware
-from app.api.routes import health, webhook
+from app.api.routes import health, mercadopago, webhook
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.database.connection import create_tables, upgrade_schema
@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(webhook.router)
+    app.include_router(mercadopago.router)
 
     return app
 

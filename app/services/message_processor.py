@@ -6,15 +6,17 @@ States:
   IDLE                → check credentials; show menu
   ONBOARDING_*        → multi-step credential collection
   AWAITING_VALUE      → scheduler (or user) triggered; waiting for monetary value
-  AWAITING_VALUE_CONFIRM → user confirms the value and period
+  AWAITING_CONFIRMATION → user confirms the value and period
   PROCESSING          → Playwright emission running (guard against duplicates)
 """
+import asyncio
 import re
 from datetime import datetime
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.exceptions import CredentialNotFoundError, NfseEmissionError
 from app.integrations.evolution.client import evolution_client
 from app.integrations.evolution.schemas import WebhookMessage
@@ -30,10 +32,12 @@ _MENU = (
     "2 - Ver histórico de notas\n"
     "3 - Atualizar meus dados\n"
     "4 - Ajuda\n"
-    "5 - Somar notas fiscais\n\n"
+    "5 - Cancelar assinatura\n"
+    "6 - Somar notas fiscais\n\n"
     "💡 Dica: A qualquer momento você pode digitar:\n"
     "• INICIAR — iniciar emissão de NFS-e\n"
     "• TOTAL — somar todas as notas (útil para o IR)\n"
+    "• ASSINAR — renovar / reativar sua assinatura\n"
     "• CANCELAR — cancelar a operação atual\n"
     "• VOLTAR — voltar para o passo anterior\n"
     "• ENCERRAR — encerrar o atendimento\n"
@@ -45,11 +49,14 @@ _HELP_MSG = (
     "1 - Emitir NFS-e da semana\n"
     "2 - Ver histórico de notas\n"
     "3 - Atualizar meus dados\n"
-    "5 - Somar notas fiscais\n\n"
+    "5 - Cancelar assinatura\n"
+    "6 - Somar notas fiscais\n\n"
     "A qualquer momento:\n"
     "INICIAR — inicia a emissão de NFS-e\n"
     "TOTAL — soma as notas do ano atual\n"
     "TOTAL 2025 — soma as notas de um ano específico\n"
+    "ASSINAR — renovar ou reativar sua assinatura\n"
+    "CANCELAR ASSINATURA — cancela sua assinatura\n"
     "CANCELAR — cancela a operação atual\n"
     "VOLTAR — volta ao passo anterior\n"
     "ENCERRAR — encerra o atendimento\n"
@@ -71,6 +78,17 @@ _BACK_MAP = {
     ConversationState.ONBOARDING_CITY:     (ConversationState.ONBOARDING_PASSWORD, "Informe sua senha do portal:"),
     ConversationState.ONBOARDING_CONFIRM:  (ConversationState.ONBOARDING_CITY,     "Informe seu municipio (ex: Campinas/SP, Sao Paulo/SP):"),
 }
+
+_ONBOARDING_STATES = {
+    ConversationState.ONBOARDING_NAME,
+    ConversationState.ONBOARDING_USERNAME,
+    ConversationState.ONBOARDING_PASSWORD,
+    ConversationState.ONBOARDING_CITY,
+    ConversationState.ONBOARDING_CONFIRM,
+}
+
+# States where the subscription check is skipped (allow even after expiry)
+_SUBSCRIPTION_EXEMPT_STATES = _ONBOARDING_STATES | {ConversationState.CANCELLING_SUBSCRIPTION}
 
 
 def _format_cnpj(text: str) -> str:
@@ -95,6 +113,11 @@ def _parse_value(text: str) -> float | None:
 
 def _validate_cnpj(text: str) -> bool:
     return len(re.sub(r"\D", "", text)) == 14
+
+
+def _is_admin(sender: str) -> bool:
+    admin = re.sub(r"\D", "", settings.admin_number)
+    return bool(admin) and sender == admin
 
 
 class MessageProcessor:
@@ -125,7 +148,7 @@ class MessageProcessor:
             return
 
         sender = number.split("@")[0]
-        user, _ = await self._users.get_or_create_user(sender, message.push_name)
+        user, is_new_user = await self._users.get_or_create_user(sender, message.push_name)
         conv = await self._sessions.get_or_create(user.id)
 
         state = ConversationState(conv.state)
@@ -137,15 +160,49 @@ class MessageProcessor:
             logger.debug("Ignoring message — emission in progress for {}", sender)
             return
 
+        # ── Admin commands (always allowed) ──────────────────────────────────
+        if _is_admin(sender):
+            handled = await self._handle_admin(sender, text)
+            if handled:
+                return
+
+        # ── Access control ───────────────────────────────────────────────────
+        if user.is_blocked:
+            await evolution_client.send_text(
+                sender,
+                "⛔ Sua conta está bloqueada. Entre em contato com o suporte:\nhttps://wa.me/5519971721948",
+            )
+            return
+
         text_upper = text.upper()
+
+        # ── Comprovante MP: número puro de 8-13 dígitos ─────────────────────
+        # Permite verificar pagamento avulso quando o webhook falha
+        _stripped = text.strip().replace(" ", "")
+        if _stripped.isdigit() and 8 <= len(_stripped) <= 13:
+            await self._handle_payment_receipt(sender, user, _stripped)
+            return
+
+        if state not in _SUBSCRIPTION_EXEMPT_STATES and not UserService.subscription_active(user):
+            await self._send_subscription_expired(sender, user)
+            return
 
         # ── Comandos globais ──────────────────────────────────────────────────
         if text_upper in ("AJUDA", "HELP"):
             await evolution_client.send_text(sender, _HELP_MSG)
             return
 
-        if text_upper.split()[0] in ("TOTAL", "SOMAR", "SOMA", "IR"):
-            parts = text_upper.split()
+        if text_upper in ("CANCELAR ASSINATURA", "CANCELAR SUBSCRICAO", "CANCELAR PLANO"):
+            await self._start_cancellation(sender, user, conv)
+            return
+
+        if text_upper in ("ASSINAR", "REATIVAR", "RENOVAR", "RENOVAR ASSINATURA"):
+            await self._send_subscription_link(sender, user)
+            return
+
+        _parts = text_upper.split()
+        if _parts and _parts[0] in ("TOTAL", "SOMAR", "SOMA", "IR"):
+            parts = _parts
             year = None
             if len(parts) > 1 and parts[1].isdigit():
                 year = int(parts[1])
@@ -188,20 +245,13 @@ class MessageProcessor:
             return
 
         if state == ConversationState.IDLE:
-            await self._handle_idle(sender, user, conv, text)
+            await self._handle_idle(sender, user, conv, text, is_new_user)
         elif state == ConversationState.ONBOARDING_NAME:
             await self._handle_onboarding_name(sender, user, conv, text)
         elif state == ConversationState.ONBOARDING_USERNAME:
             await self._handle_onboarding_username(sender, user, conv, text)
         elif state == ConversationState.ONBOARDING_PASSWORD:
-            await self._handle_onboarding_password(sender, user, conv, text)
-            await evolution_client.delete_message(number, msg_id)
-            await evolution_client.send_text(
-                sender,
-                "🔒 Senha salva com criptografia.\n"
-                "Por segurança, apague a mensagem anterior do chat agora\n"
-                "(segure a mensagem → Apagar → Apagar para todos).",
-            )
+            await self._handle_onboarding_password(sender, user, conv, text, number, msg_id)
         elif state == ConversationState.ONBOARDING_CITY:
             await self._handle_onboarding_city(sender, user, conv, text)
         elif state == ConversationState.ONBOARDING_CONFIRM:
@@ -210,6 +260,82 @@ class MessageProcessor:
             await self._handle_awaiting_value(sender, user, conv, text)
         elif state == ConversationState.AWAITING_CONFIRMATION:
             await self._handle_value_confirm(sender, user, conv, text)
+        elif state == ConversationState.CANCELLING_SUBSCRIPTION:
+            await self._handle_cancellation_confirm(sender, user, conv, text)
+
+    # ── ADMIN ────────────────────────────────────────────────────────────────
+
+    async def _handle_admin(self, sender: str, text: str) -> bool:
+        """Returns True if an admin command was handled."""
+        parts = text.split()
+        if not parts:
+            return False
+        cmd = parts[0].upper()
+
+        if cmd == "ATIVAR" and len(parts) >= 3:
+            target_number = re.sub(r"\D", "", parts[1])
+            days_str = parts[2]
+            if not days_str.isdigit():
+                await evolution_client.send_text(sender, "Uso: ATIVAR <número> <dias>")
+                return True
+            days = int(days_str)
+            target = await self._users.get_by_number(target_number)
+            if not target:
+                await evolution_client.send_text(sender, f"Usuário {target_number} não encontrado.")
+                return True
+            await self._users.activate_subscription(target, days)
+            expires = target.subscription_expires_at
+            await evolution_client.send_text(
+                sender,
+                f"✅ Assinatura ativada para {target_number} por {days} dias.\nExpira em: {expires.strftime('%d/%m/%Y') if expires else '?'}",
+            )
+            await evolution_client.send_text(
+                target_number,
+                f"✅ Sua assinatura foi ativada!\nAcesso garantido até {expires.strftime('%d/%m/%Y') if expires else '?'}.",
+            )
+            return True
+
+        if cmd == "BLOQUEAR" and len(parts) >= 2:
+            target_number = re.sub(r"\D", "", parts[1])
+            target = await self._users.get_by_number(target_number)
+            if not target:
+                await evolution_client.send_text(sender, f"Usuário {target_number} não encontrado.")
+                return True
+            await self._users.block_user(target)
+            await evolution_client.send_text(sender, f"⛔ Usuário {target_number} bloqueado.")
+            return True
+
+        if cmd == "DESBLOQUEAR" and len(parts) >= 2:
+            target_number = re.sub(r"\D", "", parts[1])
+            target = await self._users.get_by_number(target_number)
+            if not target:
+                await evolution_client.send_text(sender, f"Usuário {target_number} não encontrado.")
+                return True
+            await self._users.unblock_user(target)
+            await evolution_client.send_text(sender, f"✅ Usuário {target_number} desbloqueado.")
+            return True
+
+        if cmd == "STATUS" and len(parts) >= 2:
+            target_number = re.sub(r"\D", "", parts[1])
+            target = await self._users.get_by_number(target_number)
+            if not target:
+                await evolution_client.send_text(sender, f"Usuário {target_number} não encontrado.")
+                return True
+            days = UserService.days_remaining(target)
+            expires = target.subscription_expires_at
+            status = "ATIVO" if UserService.subscription_active(target) else "EXPIRADO"
+            blocked = " | BLOQUEADO" if target.is_blocked else ""
+            expires_str = expires.strftime("%d/%m/%Y") if expires else "ilimitado (legado)"
+            await evolution_client.send_text(
+                sender,
+                f"👤 {target.name or target_number}\n"
+                f"Status: {status}{blocked}\n"
+                f"Expira: {expires_str}\n"
+                f"Dias restantes: {days}",
+            )
+            return True
+
+        return False
 
     # ── CORRIGIR / VOLTAR ────────────────────────────────────────────────────
 
@@ -241,15 +367,26 @@ class MessageProcessor:
 
     # ── IDLE ─────────────────────────────────────────────────────────────────
 
-    async def _handle_idle(self, sender, user, conv, text) -> None:
+    async def _handle_idle(self, sender, user, conv, text, is_new_user: bool = False) -> None:
         is_configured = await self._users.user_is_configured(user.id)
 
         if not is_configured:
             await self._sessions.transition(conv, ConversationState.ONBOARDING_NAME)
-            await evolution_client.send_text(sender, _ONBOARDING_WELCOME)
+            if is_new_user:
+                await evolution_client.send_text(
+                    sender,
+                    f"👋 Olá! Bem-vindo ao Bot NFS-e SPX Driver!\n\n"
+                    "Sou seu assistente para emissão automática\n"
+                    "de Nota Fiscal de Serviços pelo WhatsApp.\n\n"
+                    f"🎁 Você terá {settings.trial_days} dias GRÁTIS para testar!\n\n"
+                    "Vamos configurar sua conta. Qual é o seu nome completo?",
+                )
+            else:
+                await evolution_client.send_text(sender, _ONBOARDING_WELCOME)
             return
 
         text_upper = text.upper()
+        name = user.name or "você"
 
         if text_upper in ("1", "EMITIR", "NOTA", "NFSE"):
             await self._ask_for_value(sender, conv)
@@ -276,14 +413,34 @@ class MessageProcessor:
             return
 
         if text_upper == "5":
+            await self._start_cancellation(sender, user, conv)
+            return
+
+        if text_upper == "6":
             await self._send_total(sender, user)
             return
 
+        menu_personalizado = (
+            f"Olá, {name}! 👋 O que deseja fazer?\n\n"
+            "1 - Emitir NFS-e da semana\n"
+            "2 - Ver histórico de notas\n"
+            "3 - Atualizar meus dados\n"
+            "4 - Ajuda\n"
+            "5 - Cancelar assinatura\n"
+            "6 - Somar notas fiscais\n\n"
+            "💡 Dica: A qualquer momento você pode digitar:\n"
+            "• INICIAR — iniciar emissão de NFS-e\n"
+            "• TOTAL — somar todas as notas (útil para o IR)\n"
+            "• ASSINAR — renovar / reativar sua assinatura\n"
+            "• CANCELAR — cancelar a operação atual\n"
+            "• MENU — voltar ao menu principal"
+        )
+
         if text_upper in ("MENU", "INICIO", "INÍCIO", "OI", "OLA", "OLÁ"):
-            await evolution_client.send_text(sender, _MENU)
+            await evolution_client.send_text(sender, menu_personalizado)
             return
 
-        await evolution_client.send_text(sender, "Não entendi. Digite MENU para ver as opções disponíveis.")
+        await evolution_client.send_text(sender, menu_personalizado)
 
     async def _ask_for_value(self, sender: str, conv) -> None:
         start, end = previous_week_period()
@@ -320,15 +477,19 @@ class MessageProcessor:
         await self._sessions.transition(conv, ConversationState.ONBOARDING_PASSWORD, ctx)
         await evolution_client.send_text(sender, "Informe sua senha do portal:")
 
-    async def _handle_onboarding_password(self, sender, user, conv, text) -> None:
+    async def _handle_onboarding_password(self, sender, user, conv, text, number, msg_id) -> None:
         if not text:
             await evolution_client.send_text(sender, "Informe sua senha:")
             return
         ctx = await self._sessions.get_context(conv)
         ctx["password"] = text
         await self._sessions.transition(conv, ConversationState.ONBOARDING_CITY, ctx)
+        await evolution_client.delete_message(number, msg_id)
         await evolution_client.send_text(
             sender,
+            "🔒 Senha salva!\n"
+            "💡 Dica de segurança: apague sua mensagem com a senha do chat agora\n"
+            "(segure a mensagem → Apagar → Apagar para todos).\n\n"
             "Informe seu municipio (ex: Campinas/SP, Sao Paulo/SP):",
         )
 
@@ -361,16 +522,18 @@ class MessageProcessor:
 
     async def _handle_onboarding_confirm(self, sender, user, conv, text) -> None:
         upper = text.upper()
-        if upper not in ("SIM", "S", "NAO", "N", "CANCELAR"):
+        if upper not in ("SIM", "S", "NAO", "NÃO", "N", "CANCELAR"):
             await evolution_client.send_text(sender, "Responda SIM para confirmar ou NAO para cancelar.")
             return
 
-        if upper in ("NAO", "N", "CANCELAR"):
+        if upper in ("NAO", "NÃO", "N", "CANCELAR"):
             await self._sessions.reset(conv)
             await evolution_client.send_text(sender, "Configuracao cancelada. " + _MENU)
             return
 
         ctx = await self._sessions.get_context(conv)
+        is_first_credential = not await self._users.user_is_configured(user.id)
+
         await self._users.save_credential(user.id, {
             "portal_type": "nacional",
             "municipality": ctx["municipality"],
@@ -386,13 +549,42 @@ class MessageProcessor:
         })
 
         await self._sessions.reset(conv)
-        await evolution_client.send_text(
-            sender,
-            "Configuracao salva com sucesso!\n\n"
-            "Toda segunda-feira as 9h voce recebera uma mensagem pedindo o valor da semana "
-            "para emissao automatica da NFS-e.\n\n"
-            "Ou envie '1' a qualquer momento para emitir manualmente.",
-        )
+
+        if is_first_credential:
+            await self._users.activate_trial(user)
+            expires = user.subscription_expires_at
+            expires_str = expires.strftime("%d/%m/%Y") if expires else "?"
+
+            from app.integrations.mercadopago.client import mp_client
+            try:
+                url = await asyncio.to_thread(mp_client.create_preference, user.id, sender)
+                payment_line = (
+                    f"Quer garantir sua assinatura agora? R$ {settings.subscription_price:.2f}/mês:\n"
+                    f"👉 {url}\n\n"
+                )
+            except Exception:
+                payment_line = (
+                    f"Após esse período, a assinatura é R$ {settings.subscription_price:.2f}/mês.\n"
+                    "Digite ASSINAR quando quiser assinar.\n\n"
+                )
+
+            await evolution_client.send_text(
+                sender,
+                f"✅ Configuração salva com sucesso!\n\n"
+                f"🎁 Você ganhou {settings.trial_days} dias GRÁTIS para testar o bot!\n"
+                f"Seu acesso gratuito expira em: {expires_str}\n\n"
+                f"{payment_line}"
+                "📅 Toda segunda-feira às 9h você receberá o pedido de valor para emissão automática da NFS-e.\n\n"
+                "Ou envie 1 a qualquer momento para emitir agora!",
+            )
+        else:
+            await evolution_client.send_text(
+                sender,
+                "✅ Dados atualizados com sucesso!\n\n"
+                "Toda segunda-feira as 9h voce recebera uma mensagem pedindo o valor da semana "
+                "para emissao automatica da NFS-e.\n\n"
+                "Ou envie '1' a qualquer momento para emitir manualmente.",
+            )
 
     # ── AWAITING VALUE ───────────────────────────────────────────────────────
 
@@ -425,11 +617,11 @@ class MessageProcessor:
 
     async def _handle_value_confirm(self, sender, user, conv, text) -> None:
         upper = text.upper()
-        if upper not in ("SIM", "S", "NAO", "N", "CANCELAR"):
+        if upper not in ("SIM", "S", "NAO", "NÃO", "N", "CANCELAR"):
             await evolution_client.send_text(sender, "Responda SIM para confirmar ou NAO para cancelar.")
             return
 
-        if upper in ("NAO", "N", "CANCELAR"):
+        if upper in ("NAO", "NÃO", "N", "CANCELAR"):
             await self._sessions.reset(conv)
             await evolution_client.send_text(sender, "Emissao cancelada. " + _MENU)
             return
@@ -517,10 +709,8 @@ class MessageProcessor:
         def fmt(v: float) -> str:
             return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-        # Notas do ano alvo
         year_invoices = [inv for inv in all_invoices if inv.created_at.year == target_year]
 
-        # Breakdown mensal do ano alvo
         monthly: dict[int, tuple[float, int]] = {}
         for inv in year_invoices:
             m = inv.created_at.month
@@ -530,7 +720,6 @@ class MessageProcessor:
         total_year = sum(v for v, _ in monthly.values())
         count_year = sum(c for _, c in monthly.values())
 
-        # Mês atual (só exibe se o ano alvo é o atual)
         month_section = ""
         if target_year == now.year:
             m_val, m_cnt = monthly.get(now.month, (0.0, 0))
@@ -540,14 +729,12 @@ class MessageProcessor:
                 f"   {fmt(m_val)} — {m_cnt} nota{'s' if m_cnt != 1 else ''}\n\n"
             )
 
-        # Breakdown mensal (só linhas com notas)
         breakdown_lines = []
         for m in sorted(monthly):
             v, c = monthly[m]
             breakdown_lines.append(f"   {_MESES[m]}/{str(target_year)[2:]}: {fmt(v)} ({c})")
         breakdown = "\n".join(breakdown_lines)
 
-        # Total histórico
         total_all = sum(float(inv.value) for inv in all_invoices)
         count_all = len(all_invoices)
 
@@ -575,3 +762,152 @@ class MessageProcessor:
         )
 
         await evolution_client.send_text(sender, msg)
+
+    # ── SUBSCRIPTION CANCELLATION ────────────────────────────────────────────
+
+    async def _start_cancellation(self, sender: str, user, conv) -> None:
+        if not UserService.subscription_active(user):
+            await evolution_client.send_text(
+                sender,
+                "Você não possui assinatura ativa.\n\nDigite ASSINAR para reativar.",
+            )
+            return
+
+        if UserService.is_cancelled(user):
+            expires = user.subscription_expires_at
+            expires_str = expires.strftime("%d/%m/%Y") if expires else "?"
+            await evolution_client.send_text(
+                sender,
+                f"Sua assinatura já está cancelada.\nVocê tem acesso até {expires_str}.\n\nDigite ASSINAR para reativar.",
+            )
+            return
+
+        expires = user.subscription_expires_at
+        expires_str = expires.strftime("%d/%m/%Y") if expires else "?"
+
+        await self._sessions.transition(conv, ConversationState.CANCELLING_SUBSCRIPTION)
+        await evolution_client.send_text(
+            sender,
+            f"⚠️ Tem certeza que deseja cancelar sua assinatura?\n\n"
+            f"Você perderá o acesso ao bot no dia {expires_str}.\n"
+            f"Seus dados ficam salvos por 30 dias caso queira reativar.\n\n"
+            "Responda SIM para confirmar o cancelamento.",
+        )
+
+    async def _handle_cancellation_confirm(self, sender, user, conv, text) -> None:
+        upper = text.upper()
+        if upper not in ("SIM", "S", "NAO", "NÃO", "N", "CANCELAR"):
+            await evolution_client.send_text(
+                sender,
+                "Responda SIM para confirmar o cancelamento ou NAO para manter a assinatura.",
+            )
+            return
+
+        if upper in ("NAO", "NÃO", "N", "CANCELAR"):
+            await self._sessions.reset(conv)
+            await evolution_client.send_text(sender, f"Ok! Sua assinatura continua ativa.\n\n{_MENU}")
+            return
+
+        await self._users.cancel_subscription(user)
+        await self._sessions.reset(conv)
+
+        expires = user.subscription_expires_at
+        expires_str = expires.strftime("%d/%m/%Y") if expires else "?"
+
+        await evolution_client.send_text(
+            sender,
+            f"✅ Assinatura cancelada.\n"
+            f"Você ainda tem acesso até {expires_str}.\n\n"
+            "Se mudar de ideia, digite ASSINAR para reativar.",
+        )
+
+    async def _send_subscription_link(self, sender: str, user) -> None:
+        """Send a fresh payment link for subscription renewal / reactivation."""
+        from app.integrations.mercadopago.client import mp_client
+        try:
+            url = await asyncio.to_thread(mp_client.create_preference, user.id, sender)
+        except Exception as exc:
+            logger.warning("MP preference creation failed for {}: {}", sender, exc)
+            url = "https://wa.me/5519971721948"
+
+        expires = user.subscription_expires_at
+        context_line = ""
+        if expires and UserService.subscription_active(user):
+            context_line = f"Sua assinatura atual vai até {expires.strftime('%d/%m/%Y')}. Assinar agora estende esse prazo.\n\n"
+
+        await evolution_client.send_text(
+            sender,
+            f"🔑 Assinar Bot NFSe — R$ {settings.subscription_price:.2f}/mês\n\n"
+            f"{context_line}"
+            f"👉 {url}\n\n"
+            "Após o pagamento sua assinatura é ativada automaticamente!",
+        )
+
+    # ── SUBSCRIPTION EXPIRED ─────────────────────────────────────────────────
+
+    async def _send_subscription_expired(self, sender: str, user) -> None:
+        from app.integrations.mercadopago.client import mp_client
+        try:
+            url = await asyncio.to_thread(mp_client.create_preference, user.id, sender)
+        except Exception as exc:
+            logger.warning("MP preference creation failed for {}: {}", sender, exc)
+            url = "https://wa.me/5519971721948"
+
+        await evolution_client.send_text(
+            sender,
+            f"⚠️ Seu acesso expirou!\n\n"
+            f"Para continuar usando o bot — R$ {settings.subscription_price:.2f}/mês:\n\n"
+            f"👉 {url}\n\n"
+            "Dúvidas? Fale com o suporte: https://wa.me/5519971721948",
+        )
+
+    async def _handle_payment_receipt(self, sender: str, user, payment_id: str) -> None:
+        """User sent a numeric payment ID from their MP receipt. Verify and activate."""
+        from app.integrations.mercadopago.client import mp_client
+
+        await evolution_client.send_text(sender, "🔍 Verificando seu pagamento...")
+
+        try:
+            payment = await asyncio.to_thread(mp_client.get_payment, payment_id)
+        except Exception as exc:
+            logger.warning("Receipt check failed for {} payment {}: {}", sender, payment_id, exc)
+            await evolution_client.send_text(
+                sender,
+                "❌ Não consegui verificar esse número de pagamento.\n\n"
+                "Verifique se digitou corretamente ou envie *ASSINEI* para ativarmos manualmente.",
+            )
+            return
+
+        status = payment.get("status", "")
+        if status != "approved":
+            await evolution_client.send_text(
+                sender,
+                f"⚠️ Esse pagamento ainda não foi aprovado (status: {status}).\n\n"
+                "Aguarde a confirmação do Mercado Pago e tente novamente.",
+            )
+            return
+
+        if user.last_payment_id == payment_id:
+            expires = user.subscription_expires_at
+            expires_str = expires.strftime("%d/%m/%Y") if expires else "?"
+            await evolution_client.send_text(
+                sender,
+                f"✅ Esse pagamento já foi processado.\n"
+                f"Sua assinatura está ativa até {expires_str}.\n\n"
+                "Digite 1 para emitir sua NFS-e agora!",
+            )
+            return
+
+        await self._users.activate_subscription(user, settings.subscription_days)
+        user.subscription_cancelled_at = None
+        user.last_payment_id = payment_id
+        expires = user.subscription_expires_at
+        expires_str = expires.strftime("%d/%m/%Y") if expires else "?"
+
+        await evolution_client.send_text(
+            sender,
+            f"✅ Pagamento verificado e confirmado!\n"
+            f"Sua assinatura está ativa até {expires_str}.\n\n"
+            "Digite 1 para emitir sua NFS-e agora!",
+        )
+        logger.info("Subscription activated via receipt for user {} — payment {}", user.id, payment_id)

@@ -36,7 +36,7 @@ class NacionalAdapter(BaseNfseAdapter):
         return "nacional"
 
     def emit(self, request: EmissionRequest) -> EmissionResult:
-        if settings.dry_run:
+        if settings.dry_run or settings.nfse_dry_run:
             logger.info("[DRY RUN] Simulando emissão — Playwright não será executado")
             return EmissionResult(invoice_number="DRY-RUN-001", pdf_path=None, xml_path=None)
 

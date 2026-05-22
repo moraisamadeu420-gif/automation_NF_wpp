@@ -3,7 +3,7 @@ app/database/connection.py
 SQLAlchemy async engine and session factory.
 Swap DATABASE_URL in .env to migrate from SQLite to PostgreSQL.
 """
-from sqlalchemy import event, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -22,12 +22,6 @@ engine = create_async_engine(
     connect_args={"check_same_thread": False} if _is_sqlite else {},
 )
 
-if _is_sqlite:
-    @event.listens_for(engine.sync_engine, "connect")
-    def _set_wal_mode(dbapi_conn, _):
-        dbapi_conn.execute("PRAGMA journal_mode=WAL")
-        dbapi_conn.execute("PRAGMA synchronous=NORMAL")
-
 AsyncSessionFactory = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -39,6 +33,9 @@ AsyncSessionFactory = async_sessionmaker(
 async def create_tables() -> None:
     """Create all tables on startup (development convenience)."""
     async with engine.begin() as conn:
+        if _is_sqlite:
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("PRAGMA synchronous=NORMAL"))
         await conn.run_sync(Base.metadata.create_all)
 
 
@@ -46,9 +43,13 @@ async def upgrade_schema() -> None:
     """Safely add columns introduced after initial create_all.
     Silently skips columns that already exist (OperationalError = duplicate)."""
     new_columns = [
-        ("invoices", "failed_at",        "DATETIME"),
-        ("invoices", "failed_stage",     "VARCHAR(50)"),
-        ("invoices", "screenshot_path",  "TEXT"),
+        ("invoices", "failed_at",              "DATETIME"),
+        ("invoices", "failed_stage",           "VARCHAR(50)"),
+        ("invoices", "screenshot_path",        "TEXT"),
+        ("users",    "is_blocked",                  "BOOLEAN DEFAULT 0"),
+        ("users",    "subscription_expires_at",    "DATETIME"),
+        ("users",    "subscription_cancelled_at",  "DATETIME"),
+        ("users",    "last_payment_id",            "VARCHAR(50)"),
     ]
     async with engine.begin() as conn:
         for table, col, col_type in new_columns:

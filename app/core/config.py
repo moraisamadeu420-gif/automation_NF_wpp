@@ -45,8 +45,23 @@ class Settings(BaseSettings):
     internal_api_key: str = ""
     encryption_key: str = ""
 
+    # Mercado Pago
+    mercadopago_access_token: str = ""
+    mercadopago_webhook_secret: str = ""
+    mercadopago_skip_signature: bool = False
+    subscription_price: float = 19.90
+    subscription_days: int = 30
+    trial_days: int = 15
+    # URL pública do bot (ex: https://abc123.ngrok-free.app ou domínio de produção)
+    # Usada para registrar notification_url nas preferências do MP
+    bot_public_url: str = ""
+
+    # Admin
+    admin_number: str = ""
+
     # Development
     dry_run: bool = False
+    nfse_dry_run: bool = False
 
     # Retry policy
     retry_attempts: int = 3

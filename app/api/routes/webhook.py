@@ -3,6 +3,7 @@ app/api/routes/webhook.py
 Receives Evolution API webhook events and dispatches to MessageProcessor.
 """
 import json
+from collections import deque
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
@@ -18,6 +19,10 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 # Evolution API event names that carry WhatsApp messages
 _MESSAGE_EVENTS = {"messages.upsert", "MESSAGES_UPSERT", "message"}
+
+# In-memory dedup cache — prevents double processing when Evolution API
+# delivers the same webhook twice (known behaviour)
+_SEEN_MSG_IDS: deque[str] = deque(maxlen=500)
 
 
 async def _process_event(raw: dict[str, Any]) -> None:
@@ -56,10 +61,15 @@ async def _process_event(raw: dict[str, Any]) -> None:
     async with AsyncSessionFactory() as session:
         processor = MessageProcessor(session)
         for message in messages:
+            msg_id = message.key.id
+            if msg_id in _SEEN_MSG_IDS:
+                logger.debug("Duplicate webhook ignored — msg_id: {}", msg_id)
+                continue
+            _SEEN_MSG_IDS.append(msg_id)
             try:
                 await processor.process(message)
             except Exception as exc:
-                logger.exception("Unhandled error processing message {}: {}", message.key.id, exc)
+                logger.exception("Unhandled error processing message {}: {}", msg_id, exc)
         try:
             await session.commit()
         except Exception as exc:
@@ -123,3 +133,27 @@ async def trigger_weekly_prompt(background_tasks: BackgroundTasks) -> dict:
     background_tasks.add_task(weekly_prompt_job)
     logger.info("Manual trigger: weekly_prompt_job queued")
     return {"status": "queued", "job": "weekly_prompt_job"}
+
+
+@router.post(
+    "/trigger-subscription-reminder",
+    include_in_schema=False,
+)
+async def trigger_subscription_reminder(background_tasks: BackgroundTasks) -> dict:
+    """Dev/test endpoint — runs the subscription expiry reminder job immediately."""
+    from app.workers.scheduler import subscription_reminder_job
+    background_tasks.add_task(subscription_reminder_job)
+    logger.info("Manual trigger: subscription_reminder_job queued")
+    return {"status": "queued", "job": "subscription_reminder_job"}
+
+
+@router.post(
+    "/trigger-cleanup",
+    include_in_schema=False,
+)
+async def trigger_cleanup(background_tasks: BackgroundTasks) -> dict:
+    """Dev/test endpoint — runs the cancelled user cleanup job immediately."""
+    from app.workers.scheduler import cancelled_user_cleanup_job
+    background_tasks.add_task(cancelled_user_cleanup_job)
+    logger.info("Manual trigger: cancelled_user_cleanup_job queued")
+    return {"status": "queued", "job": "cancelled_user_cleanup_job"}
