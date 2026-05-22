@@ -22,6 +22,7 @@ class ConversationState(str, Enum):
     AWAITING_CONFIRMATION = "awaiting_confirmation"
     PROCESSING = "processing"
     CANCELLING_SUBSCRIPTION = "cancelling_subscription"
+    SUBSCRIPTION_MENU = "subscription_menu"
 
 
 class WhatsappSession(Base):

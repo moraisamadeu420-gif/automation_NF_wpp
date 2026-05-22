@@ -2,6 +2,7 @@
 app/repositories/session_repository.py
 """
 import json
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,8 +35,12 @@ class SessionRepository(BaseRepository[WhatsappSession]):
         context: dict | None = None,
     ) -> WhatsappSession:
         session.state = new_state
+        # Always stamp _ts so the timeout check in message_processor works
+        existing = json.loads(session.context_data) if session.context_data else {}
         if context is not None:
-            session.context_data = json.dumps(context)
+            existing = context
+        existing["_ts"] = datetime.now().isoformat()
+        session.context_data = json.dumps(existing)
         await self._session.flush()
         return session
 

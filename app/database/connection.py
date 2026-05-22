@@ -1,7 +1,9 @@
 """
 app/database/connection.py
-SQLAlchemy async engine and session factory.
-Swap DATABASE_URL in .env to migrate from SQLite to PostgreSQL.
+SQLAlchemy async engine e session factory.
+
+SQLite (dev):    DATABASE_URL=sqlite+aiosqlite:///./data/nfse.db
+PostgreSQL (prod): DATABASE_URL=postgresql+asyncpg://user:pass@host/dbname
 """
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -14,13 +16,26 @@ class Base(DeclarativeBase):
     pass
 
 
-_is_sqlite = "sqlite" in settings.database_url
+_is_sqlite = settings.database_url.startswith("sqlite")
 
-engine = create_async_engine(
-    settings.database_url,
-    echo=settings.debug,
-    connect_args={"check_same_thread": False} if _is_sqlite else {},
-)
+_engine_kwargs: dict = {
+    "echo": settings.debug,
+    "pool_pre_ping": True,  # reconecta em conexões mortas (essencial em produção)
+}
+
+if _is_sqlite:
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # Connection pool para PostgreSQL
+    # pool_size: conexões persistentes; max_overflow: burst máximo
+    _engine_kwargs.update({
+        "pool_size": 5,
+        "max_overflow": 10,
+        "pool_timeout": 30,
+        "pool_recycle": 1800,  # recicla conexões a cada 30 min (evita timeout do PG)
+    })
+
+engine = create_async_engine(settings.database_url, **_engine_kwargs)
 
 AsyncSessionFactory = async_sessionmaker(
     bind=engine,
@@ -30,33 +45,21 @@ AsyncSessionFactory = async_sessionmaker(
 )
 
 
+async def init_db() -> None:
+    """Aplica PRAGMAs do SQLite na inicialização. PostgreSQL não precisa disso."""
+    if _is_sqlite:
+        async with engine.begin() as conn:
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("PRAGMA synchronous=NORMAL"))
+
+
 async def create_tables() -> None:
-    """Create all tables on startup (development convenience)."""
+    """Cria tabelas direto pelo ORM. Usado em testes e dev sem Alembic."""
     async with engine.begin() as conn:
         if _is_sqlite:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
             await conn.execute(text("PRAGMA synchronous=NORMAL"))
         await conn.run_sync(Base.metadata.create_all)
-
-
-async def upgrade_schema() -> None:
-    """Safely add columns introduced after initial create_all.
-    Silently skips columns that already exist (OperationalError = duplicate)."""
-    new_columns = [
-        ("invoices", "failed_at",              "DATETIME"),
-        ("invoices", "failed_stage",           "VARCHAR(50)"),
-        ("invoices", "screenshot_path",        "TEXT"),
-        ("users",    "is_blocked",                  "BOOLEAN DEFAULT 0"),
-        ("users",    "subscription_expires_at",    "DATETIME"),
-        ("users",    "subscription_cancelled_at",  "DATETIME"),
-        ("users",    "last_payment_id",            "VARCHAR(50)"),
-    ]
-    async with engine.begin() as conn:
-        for table, col, col_type in new_columns:
-            try:
-                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass  # column already exists
 
 
 async def drop_tables() -> None:

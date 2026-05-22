@@ -70,7 +70,6 @@ async def weekly_prompt_job() -> None:
 async def cancelled_user_cleanup_job() -> None:
     """Deletes data (credentials, invoices, session) for users who cancelled their
     subscription and whose access expired more than 30 days ago."""
-    from sqlalchemy import delete
     cutoff = datetime.now() - timedelta(days=30)
 
     async with AsyncSessionFactory() as session:

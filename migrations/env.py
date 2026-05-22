@@ -1,6 +1,8 @@
 """
 migrations/env.py
-Alembic async environment for SQLAlchemy 2.x.
+Alembic async environment — suporta SQLite e PostgreSQL.
+A DATABASE_URL é lida das variáveis de ambiente via Settings,
+ignorando o sqlalchemy.url do alembic.ini.
 """
 import asyncio
 from logging.config import fileConfig
@@ -11,7 +13,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.core.config import settings
 from app.database.connection import Base
 
-# Import all models so Alembic can detect them
+# Importa todos os models para Alembic detectar as tabelas
 import app.models  # noqa: F401
 
 config = context.config
@@ -27,13 +29,18 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        render_as_batch=True,  # necessário para SQLite (não suporta ALTER TABLE)
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
-def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
+def do_run_migrations(connection) -> None:
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        render_as_batch=True,  # necessário para SQLite
+    )
     with context.begin_transaction():
         context.run_migrations()
 

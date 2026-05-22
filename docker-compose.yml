@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # Sobrescreve o DATABASE_URL do .env para apontar ao container
+      DATABASE_URL: postgresql+asyncpg://nfse:${POSTGRES_PASSWORD:-nfse}@db:5432/nfse
+      RUN_SCHEDULER: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./output:/app/output
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nfse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nfse}
+      POSTGRES_DB: nfse
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nfse -d nfse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    ports:
+      - "5432:5432"   # remova em produção para não expor o banco
+
+volumes:
+  postgres_data:

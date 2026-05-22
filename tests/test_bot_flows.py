@@ -278,7 +278,7 @@ class TestOnboarding:
         await bot.send("12345678000199")
         await bot.send("senha123")
         assert len(bot.replies) == 1, "Should be exactly one message (tip + city question)"
-        assert bot.replied_with("senha") and bot.replied_with("municipio")
+        assert bot.replied_with("senha") and bot.replied_with("pio")
 
     # ── City ──────────────────────────────────────────────────────────────────
 
@@ -631,7 +631,7 @@ class TestGlobalCommands:
     async def test_random_number_at_idle(self, bot: BotClient) -> None:
         """Unknown option like '99' shows 'Não entendi' fallback."""
         replies = await bot.send("99")
-        assert bot.replied_with("entendi") or bot.replied_with("menu")
+        assert bot.replied_with("deseja") or bot.replied_with("Emitir")
 
     async def test_group_message_ignored(self, db: AsyncSession) -> None:
         """Messages from groups (@g.us) are silently ignored."""
@@ -817,7 +817,7 @@ class TestSubscription:
 
         await bot.send(f"ATIVAR 5541999000001 30")
         # Not an admin → falls through to _handle_idle → "Não entendi"
-        assert bot.replied_with("entendi") or bot.replied_with("menu")
+        assert bot.replied_with("deseja") or bot.replied_with("Emitir")
 
     # ── Cancellation ──────────────────────────────────────────────────────────
 

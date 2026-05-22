@@ -156,11 +156,13 @@ class NacionalAdapter(BaseNfseAdapter):
     def _preencher_municipio_servico_descricao(self, page: Page, request: EmissionRequest) -> None:
         logger.info("Preenchendo município, serviço e descrição...")
         try:
-            # Município
-            municipio = request.municipio.split("/")[0].strip()
+            # Município — preserva o estado informado pelo usuário (ex: "Campinas/SP")
+            parts = request.municipio.split("/")
+            municipio_cidade = parts[0].strip()
+            municipio_estado = parts[1].strip() if len(parts) > 1 else "SP"
             page.locator("#pnlLocalPrestacao").get_by_label("").click(timeout=60_000)
-            page.get_by_role("searchbox", name="Search").fill(municipio)
-            page.get_by_role("option", name=f"{municipio}/SP").click(timeout=60_000)
+            page.get_by_role("searchbox", name="Search").fill(municipio_cidade)
+            page.get_by_role("option", name=f"{municipio_cidade}/{municipio_estado}").click(timeout=60_000)
 
             # Código do serviço — digita e pressiona Enter
             page.get_by_label("", exact=True).click(timeout=60_000)

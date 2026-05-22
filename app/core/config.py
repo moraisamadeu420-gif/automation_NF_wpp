@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     mercadopago_access_token: str = ""
     mercadopago_webhook_secret: str = ""
     mercadopago_skip_signature: bool = False
+    # Link do plano recorrente MP (checkout compartilhado). Ativação manual pelo admin.
+    mercadopago_plan_url: str = ""
     subscription_price: float = 19.90
     subscription_days: int = 30
     trial_days: int = 15
@@ -59,9 +61,15 @@ class Settings(BaseSettings):
     # Admin
     admin_number: str = ""
 
-    # Development
+    # Development / testing
     dry_run: bool = False
     nfse_dry_run: bool = False
+    skip_migrations: bool = False  # True em testes (usa create_tables direto)
+
+    # Worker flags
+    # Sobe o scheduler apenas em um worker. Em Railway com múltiplos dynos,
+    # defina RUN_SCHEDULER=true em somente um deles.
+    run_scheduler: bool = True
 
     # Retry policy
     retry_attempts: int = 3

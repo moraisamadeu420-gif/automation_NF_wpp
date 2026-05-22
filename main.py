@@ -1,11 +1,10 @@
 """
 main.py
-FastAPI application factory and entry point.
+FastAPI application factory e entry point.
 
-Run with:
-    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-Or via Makefile:
-    make dev
+Dev:   make dev
+Prod:  uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
+Docker: docker compose up
 """
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -18,25 +17,53 @@ from app.api.middleware import RateLimitMiddleware, RequestLoggingMiddleware
 from app.api.routes import health, mercadopago, webhook
 from app.core.config import settings
 from app.core.logging import configure_logging
-from app.database.connection import create_tables, upgrade_schema
+from app.database.connection import create_tables, init_db
 from app.workers.scheduler import create_scheduler
+
+
+def _run_migrations() -> None:
+    """Executa migrações Alembic em thread separada (evita conflito de event loop)."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "head")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging()
     settings.ensure_directories()
-    await create_tables()
-    await upgrade_schema()
 
-    scheduler = create_scheduler()
-    scheduler.start()
-    logger.info("Scheduler started — weekly NFSe prompt every Monday at 09:00 BRT")
+    # Migrations: Alembic em produção, create_all em testes
+    # asyncio.to_thread evita o RuntimeError "event loop already running"
+    # pois Alembic chama asyncio.run() internamente
+    if settings.skip_migrations:
+        await create_tables()
+        logger.info("Tabelas criadas via ORM (modo teste)")
+    else:
+        try:
+            import asyncio
+            await asyncio.to_thread(_run_migrations)
+            logger.info("Migrations Alembic aplicadas")
+        except Exception as exc:
+            logger.warning("Alembic falhou ({}). Fallback: create_all", exc)
+            await create_tables()
+
+    await init_db()
+
+    # Scheduler: só inicia se RUN_SCHEDULER=true (evita jobs duplicados em multi-worker)
+    scheduler = None
+    if settings.run_scheduler:
+        scheduler = create_scheduler()
+        scheduler.start()
+        logger.info("Scheduler iniciado — weekly prompt toda segunda 09:00 BRT")
 
     yield
 
-    scheduler.shutdown()
-    logger.info("Scheduler stopped")
+    if scheduler:
+        scheduler.shutdown()
+        logger.info("Scheduler encerrado")
 
 
 def create_app() -> FastAPI:
