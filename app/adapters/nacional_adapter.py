@@ -145,11 +145,13 @@ class NacionalAdapter(BaseNfseAdapter):
                 # fallback: clica no primeiro .day que bate o número (ignora classes)
                 page.locator("td.day").filter(has_text=re.compile(f"^{dia_atual}$")).first.click(timeout=30_000)
 
-            # Tomador — Pessoa Jurídica: dispatch_event porque iCheck não responde a .click() em headless
+            # Tomador — Pessoa Jurídica: clica no label (iCheck ignora click no ícone em headless)
             page.locator(
-                ".form-group.form-group-lg > .radio-options > div:nth-child(2) > label > .cr > .cr-icon"
-            ).first.dispatch_event("click")
-            page.locator("#Tomador_Inscricao").click(timeout=60_000)
+                ".form-group.form-group-lg > .radio-options > div:nth-child(2) > label"
+            ).first.click(force=True, timeout=10_000)
+            # Aguarda o campo CNPJ ficar visível antes de preencher
+            page.wait_for_selector("#Tomador_Inscricao", state="visible", timeout=15_000)
+            page.locator("#Tomador_Inscricao").click(timeout=10_000)
             page.locator("#Tomador_Inscricao").fill(_TOMADOR_CNPJ)
             page.locator("#btn_Tomador_Inscricao_pesquisar").click(timeout=60_000)
             page.wait_for_load_state("networkidle", timeout=30_000)
@@ -182,8 +184,8 @@ class NacionalAdapter(BaseNfseAdapter):
             page.get_by_label("", exact=True).click(timeout=60_000)
             page.get_by_role("searchbox", name="Search").fill("160201")
             page.get_by_role("searchbox", name="Search").press("Enter")
-            # iCheck radio "Sim" abaixo do serviço: dispatch_event porque não responde a .click() em headless
-            page.locator("i").nth(1).dispatch_event("click")
+            # iCheck radio "Sim" abaixo do serviço: sobe ao label pai via XPath e força o clique
+            page.locator("i.cr-icon").nth(1).locator("xpath=../..").click(force=True, timeout=10_000)
 
             # Descrição
             descricao = (
