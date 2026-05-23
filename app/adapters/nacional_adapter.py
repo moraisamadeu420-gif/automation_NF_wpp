@@ -145,11 +145,10 @@ class NacionalAdapter(BaseNfseAdapter):
                 # fallback: clica no primeiro .day que bate o número (ignora classes)
                 page.locator("td.day").filter(has_text=re.compile(f"^{dia_atual}$")).first.click(timeout=30_000)
 
-            # Tomador — Pessoa Jurídica: clica no label (iCheck ignora click no ícone em headless)
+            # Tomador — Pessoa Jurídica: force=True porque iCheck marca o ícone como "not enabled" em headless
             page.locator(
-                ".form-group.form-group-lg > .radio-options > div:nth-child(2) > label"
+                ".form-group.form-group-lg > .radio-options > div:nth-child(2) > label > .cr > .cr-icon"
             ).first.click(force=True, timeout=10_000)
-            # Aguarda o campo CNPJ ficar visível antes de preencher
             page.wait_for_selector("#Tomador_Inscricao", state="visible", timeout=15_000)
             page.locator("#Tomador_Inscricao").click(timeout=10_000)
             page.locator("#Tomador_Inscricao").fill(_TOMADOR_CNPJ)
@@ -180,12 +179,12 @@ class NacionalAdapter(BaseNfseAdapter):
             page.get_by_role("searchbox", name="Search").fill(municipio_cidade)
             page.get_by_role("option", name=f"{municipio_cidade}/{municipio_estado}").click(timeout=60_000)
 
-            # Código do serviço — abre dropdown, digita, seleciona com Enter
+            # Código do serviço — abre dropdown, digita e clica na opção pelo nome
             page.get_by_label("", exact=True).click(timeout=60_000)
             page.get_by_role("searchbox", name="Search").fill("160201")
-            page.get_by_role("searchbox", name="Search").press("Enter")
-            # iCheck radio "Sim" abaixo do serviço: sobe ao label pai via XPath e força o clique
-            page.locator("i.cr-icon").nth(1).locator("xpath=../..").click(force=True, timeout=10_000)
+            page.get_by_role("option", name="16.02.01 - Outros serviços de").click(timeout=30_000)
+            # iCheck radio "Sim": force=True porque headless marca como "not enabled"
+            page.locator("i").nth(1).click(force=True, timeout=10_000)
 
             # Descrição
             descricao = (
