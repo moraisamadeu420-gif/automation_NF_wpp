@@ -145,10 +145,10 @@ class NacionalAdapter(BaseNfseAdapter):
                 # fallback: clica no primeiro .day que bate o número (ignora classes)
                 page.locator("td.day").filter(has_text=re.compile(f"^{dia_atual}$")).first.click(timeout=30_000)
 
-            # Tomador — Pessoa Jurídica: force=True porque iCheck marca o ícone como "not enabled" em headless
-            page.locator(
-                ".form-group.form-group-lg > .radio-options > div:nth-child(2) > label > .cr > .cr-icon"
-            ).first.click(force=True, timeout=10_000)
+            # Tomador — Pessoa Jurídica: JS nativo dispara o evento que o iCheck escuta
+            page.evaluate(
+                "document.querySelectorAll('.form-group.form-group-lg .radio-options input[type=\"radio\"]')[1].click()"
+            )
             page.wait_for_selector("#Tomador_Inscricao", state="visible", timeout=15_000)
             page.locator("#Tomador_Inscricao").click(timeout=10_000)
             page.locator("#Tomador_Inscricao").fill(_TOMADOR_CNPJ)
@@ -183,8 +183,10 @@ class NacionalAdapter(BaseNfseAdapter):
             page.get_by_label("", exact=True).click(timeout=60_000)
             page.get_by_role("searchbox", name="Search").fill("160201")
             page.get_by_role("option", name="16.02.01 - Outros serviços de").click(timeout=30_000)
-            # iCheck radio "Sim": force=True porque headless marca como "not enabled"
-            page.locator("i").nth(1).click(force=True, timeout=10_000)
+            # iCheck radio "Sim": JS nativo dispara o evento que o iCheck escuta
+            page.evaluate(
+                "document.querySelectorAll('#pnlServicoPrestado .radio-options input[type=\"radio\"]')[0].click()"
+            )
 
             # Descrição
             descricao = (
@@ -244,20 +246,37 @@ class NacionalAdapter(BaseNfseAdapter):
     def _extrair_numero_nota(self, page: Page) -> str | None:
         for selector in [
             "[id*='NumeroNfse']",
+            "[id*='numeroNfse']",
+            "[id*='numero_nfse']",
             "td:has-text('Número')",
             "strong:has-text('Número')",
             "span[id*='numero']",
+            "h4:has-text('NFS')",
+            ".alert-success",
+            ".panel-title",
         ]:
             try:
                 el = page.locator(selector).first
                 if el.is_visible():
                     nums = re.findall(r"\d+", el.text_content() or "")
                     if nums:
-                        logger.info("Número da nota: {}", nums[0])
+                        logger.info("Número da nota ({}): {}", selector, nums[0])
                         return nums[0]
             except Exception:
                 continue
-        logger.warning("Número da nota não encontrado")
+
+        # Tenta extrair qualquer número saliente no texto completo da página
+        try:
+            body = page.locator("body").text_content() or ""
+            matches = re.findall(r"NFS-e\s*n[º°o]?\s*[\:\-]?\s*(\d+)", body, re.IGNORECASE)
+            if matches:
+                logger.info("Número da nota (regex body): {}", matches[0])
+                return matches[0]
+        except Exception:
+            pass
+
+        _screenshot(page, "numero_nao_encontrado")
+        logger.warning("Número da nota não encontrado — screenshot salvo para diagnóstico")
         return None
 
     # ── 11. baixar PDF ────────────────────────────────────────────────────────
