@@ -127,10 +127,23 @@ class NacionalAdapter(BaseNfseAdapter):
     def _preencher_data_e_tomador(self, page: Page, request: EmissionRequest) -> None:
         logger.info("Preenchendo data e tomador...")
         try:
-            # Data de competência
+            # Data de competência — usa CSS .day para evitar ambiguidade do get_by_role
             dia_atual = date.today().day
             page.locator("#btn_DataCompetencia").click(timeout=60_000)
-            page.get_by_role("cell", name=str(dia_atual)).click(timeout=60_000)
+            page.wait_for_selector("td.day", timeout=10_000)
+            day_cells = page.locator("td.day")
+            clicked = False
+            for i in range(day_cells.count()):
+                cell = day_cells.nth(i)
+                classes = cell.get_attribute("class") or ""
+                text = (cell.text_content() or "").strip()
+                if text == str(dia_atual) and "disabled" not in classes and "old" not in classes and "new" not in classes:
+                    cell.click(timeout=10_000)
+                    clicked = True
+                    break
+            if not clicked:
+                # fallback: clica no primeiro .day que bate o número (ignora classes)
+                page.locator("td.day").filter(has_text=re.compile(f"^{dia_atual}$")).first.click(timeout=30_000)
 
             # Tomador — Pessoa Jurídica + CNPJ Shopee (fixo)
             page.locator(
