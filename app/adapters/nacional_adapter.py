@@ -145,10 +145,33 @@ class NacionalAdapter(BaseNfseAdapter):
                 # fallback: clica no primeiro .day que bate o número (ignora classes)
                 page.locator("td.day").filter(has_text=re.compile(f"^{dia_atual}$")).first.click(timeout=30_000)
 
-            # Tomador — Pessoa Jurídica: JS nativo dispara o evento que o iCheck escuta
-            page.evaluate(
-                "document.querySelectorAll('.form-group.form-group-lg .radio-options input[type=\"radio\"]')[1].click()"
-            )
+            # Tomador — Pessoa Jurídica: seleciona o radio e exibe a seção diretamente no DOM
+            page.evaluate("""() => {
+                const radios = document.querySelectorAll(
+                    '.form-group.form-group-lg .radio-options input[type="radio"]'
+                );
+                const radio = radios[1];
+                if (!radio) return;
+                radio.checked = true;
+                ['mousedown','mouseup','click','change'].forEach(t =>
+                    radio.dispatchEvent(new MouseEvent(t, {bubbles: true, cancelable: true}))
+                );
+                if (window.jQuery) {
+                    jQuery(radio).trigger('click').trigger('change')
+                        .trigger('ifChecked').trigger('ifChanged');
+                }
+                // Fallback: exibe a seção do tomador diretamente caso iCheck não responda
+                const inp = document.querySelector('#Tomador_Inscricao');
+                if (inp) {
+                    let el = inp;
+                    for (let i = 0; i < 8; i++) {
+                        if (!el.parentElement) break;
+                        el = el.parentElement;
+                        if (window.getComputedStyle(el).display === 'none')
+                            el.style.display = 'block';
+                    }
+                }
+            }""")
             page.wait_for_selector("#Tomador_Inscricao", state="visible", timeout=15_000)
             page.locator("#Tomador_Inscricao").click(timeout=10_000)
             page.locator("#Tomador_Inscricao").fill(_TOMADOR_CNPJ)

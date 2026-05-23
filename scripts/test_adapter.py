@@ -50,18 +50,27 @@ request = EmissionRequest(
     tomador_razao_social="SHOPEE INTERNACIONAL BRASIL LTDA",
     service_description="Serviços de entrega",
     municipio=MUNICIPIO,
-    headless=False,   # browser visível para debug
-    slow_mo=500,      # 500ms entre ações para ver o que acontece
+    headless=True,    # simula o Railway
+    slow_mo=0,
     user_id=0,
 )
 
-adapter = NacionalAdapter()
+class NacionalAdapterDryTest(NacionalAdapter):
+    """Para antes de emitir — só testa o preenchimento do formulário."""
+    def _emitir(self, page):
+        input("\n✋ Formulário preenchido. Verifique o browser e pressione ENTER para fechar.")
 
-print("\n🚀 Iniciando emissão de teste (browser visível)...\n")
+    def _extrair_numero_nota(self, page):
+        return "TEST-OK"
+
+    def _baixar_pdf(self, page, request):
+        return None
+
+adapter = NacionalAdapterDryTest()
+
+print("\n🚀 Iniciando teste de formulário (SEM emitir nota)...\n")
 try:
     result = adapter.emit(request)
-    print(f"\n✅ Emissão concluída!")
-    print(f"   Número da nota: {result.invoice_number}")
-    print(f"   PDF: {result.pdf_path}")
+    print(f"\n✅ Formulário preenchido com sucesso — nenhuma nota emitida.")
 except Exception as e:
     print(f"\n❌ Erro: {e}")
