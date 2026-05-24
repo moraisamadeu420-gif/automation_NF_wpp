@@ -17,7 +17,6 @@ class MercadoPagoClient:
         if not settings.mercadopago_access_token:
             raise RuntimeError("MERCADOPAGO_ACCESS_TOKEN not configured")
 
-        base_url = settings.bot_public_url.rstrip("/") if settings.bot_public_url else "https://mercadopago.com.br"
         preference_data: dict = {
             "items": [{
                 "title": "Acesso Bot NFSe — 30 dias",
@@ -27,13 +26,6 @@ class MercadoPagoClient:
             }],
             "external_reference": str(user_id),
             "metadata": {"user_id": user_id, "whatsapp_number": whatsapp_number},
-            "back_urls": {
-                "success": f"{base_url}/webhook/mercadopago",
-                "failure": f"{base_url}/webhook/mercadopago",
-                "pending": f"{base_url}/webhook/mercadopago",
-            },
-            "auto_return": "approved",
-            "statement_descriptor": "Bot NFSe",
         }
         if settings.bot_public_url:
             preference_data["notification_url"] = (

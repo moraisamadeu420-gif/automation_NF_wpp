@@ -431,7 +431,7 @@ class MessageProcessor:
             if is_new_user:
                 await evolution_client.send_text(
                     sender,
-                    f"👋 Bem-vindo!\n🎁 {settings.trial_days} Aproveite 16 dias grátis para testar.\n\n Digite seu nome completo:",
+                    f"👋 Bem-vindo!\n🎁 Aproveite {settings.trial_days} dias grátis para testar.\n\n Digite seu nome completo:",
                 )
             else:
                 await evolution_client.send_text(sender, _ONBOARDING_WELCOME)
@@ -884,13 +884,12 @@ class MessageProcessor:
                 f"🔄 *Assinatura recorrente* (ativação manual):\n"
                 f"👉 {settings.mercadopago_plan_url}\n"
                 f"Após assinar, entre em contato para ativar:\n"
-                f"👉 {self._admin_wa_link()}\n\n"
+                f"👉 {self._admin_wa_link()}\n"
             )
 
         if not avulso_url and not settings.mercadopago_plan_url:
-            msg += f"👉 {self._admin_wa_link()}\n\n"
+            msg += f"👉 {self._admin_wa_link()}\n"
 
-        msg = msg.rstrip() + "\n\nPagamento avulso: ativação imediata e automática!"
         await evolution_client.send_text(sender, msg)
 
     # ── SUBSCRIPTION EXPIRED ─────────────────────────────────────────────────
