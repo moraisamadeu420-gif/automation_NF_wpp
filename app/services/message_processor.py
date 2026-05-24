@@ -98,16 +98,7 @@ def _parse_value(text: str) -> float | None:
 
 
 def _validate_cnpj(text: str) -> bool:
-    digits = re.sub(r"\D", "", text)
-    if len(digits) != 14:
-        return False
-    def _digit(d: str, weights: list[int]) -> int:
-        s = sum(int(d[i]) * weights[i] for i in range(len(weights)))
-        r = s % 11
-        return 0 if r < 2 else 11 - r
-    d1 = _digit(digits[:12], [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
-    d2 = _digit(digits[:13], [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
-    return digits[12] == str(d1) and digits[13] == str(d2)
+    return len(re.sub(r"\D", "", text)) == 14
 
 
 def _with_back(text: str) -> str:
