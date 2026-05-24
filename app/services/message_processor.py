@@ -98,7 +98,16 @@ def _parse_value(text: str) -> float | None:
 
 
 def _validate_cnpj(text: str) -> bool:
-    return len(re.sub(r"\D", "", text)) == 14
+    digits = re.sub(r"\D", "", text)
+    if len(digits) != 14:
+        return False
+    def _digit(d: str, weights: list[int]) -> int:
+        s = sum(int(d[i]) * weights[i] for i in range(len(weights)))
+        r = s % 11
+        return 0 if r < 2 else 11 - r
+    d1 = _digit(digits[:12], [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    d2 = _digit(digits[:13], [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    return digits[12] == str(d1) and digits[13] == str(d2)
 
 
 def _with_back(text: str) -> str:
@@ -200,9 +209,14 @@ class MessageProcessor:
         text_upper = text.upper()
 
         # ── Comprovante MP: número puro de 8-13 dígitos ─────────────────────
-        # Só verifica fora do onboarding para não confundir CNPJ/CPF de login
+        # Só verifica fora do onboarding/emissão para não confundir CNPJ ou valor
+        _RECEIPT_EXEMPT = _ONBOARDING_STATES | {
+            ConversationState.AWAITING_VALUE,
+            ConversationState.AWAITING_CONFIRMATION,
+            ConversationState.PROCESSING,
+        }
         _stripped = text.strip().replace(" ", "")
-        if (state not in _ONBOARDING_STATES
+        if (state not in _RECEIPT_EXEMPT
                 and _stripped.isdigit()
                 and 8 <= len(_stripped) <= 13):
             await self._handle_payment_receipt(sender, user, _stripped)
@@ -256,7 +270,7 @@ class MessageProcessor:
                 await evolution_client.send_text(sender, _ONBOARDING_WELCOME)
             return
 
-        if text_upper in ("CANCELAR", "PARAR") and state != ConversationState.IDLE:
+        if text_upper in ("CANCELAR", "PARAR") and state not in (ConversationState.IDLE, ConversationState.PROCESSING):
             await self._sessions.reset(conv)
             await evolution_client.send_text(sender, f"Ok! Operação cancelada.\n\n{_MENU}")
             return
@@ -400,12 +414,17 @@ class MessageProcessor:
 
         if state == ConversationState.CANCELLING_SUBSCRIPTION:
             await self._sessions.reset(conv)
-            await evolution_client.send_text(sender, f"Ok! Cancelamento concluído.\n\n{_MENU}")
+            await evolution_client.send_text(sender, f"Ok! Assinatura mantida.\n\n{_MENU}")
             return
 
         if state == ConversationState.SUBSCRIPTION_MENU:
             await self._sessions.reset(conv)
             await evolution_client.send_text(sender, _MENU)
+            return
+
+        if state == ConversationState.AWAITING_VALUE:
+            await self._sessions.reset(conv)
+            await evolution_client.send_text(sender, f"Ok!\n\n{_MENU}")
             return
 
         ctx = await self._sessions.get_context(conv)
@@ -528,6 +547,12 @@ class MessageProcessor:
     async def _handle_onboarding_city(self, sender, user, conv, text) -> None:
         if not text:
             await evolution_client.send_text(sender, _with_back("Informe seu municipio:"))
+            return
+        if not re.match(r"^[A-Za-záàâãéèêíïóôõöúçÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇ ]+/[A-Z]{2}$", text.strip()):
+            await evolution_client.send_text(
+                sender,
+                _with_back("Formato invalido. Use Cidade/UF com a sigla do estado em maiúsculas (ex: Campinas/SP):"),
+            )
             return
         ctx = await self._sessions.get_context(conv)
         ctx["municipality"] = text
@@ -667,10 +692,12 @@ class MessageProcessor:
         except (CredentialNotFoundError, NfseEmissionError) as exc:
             logger.error("Emission error for {}: {}", sender, exc)
             await self._sessions.reset(conv)
-            await evolution_client.send_text(
-                sender,
-                f"Falha na emissao: {exc}\n\nVerifique suas credenciais com a opcao 3.",
-            )
+            is_credential_issue = isinstance(exc, CredentialNotFoundError) or getattr(exc, "critical", False)
+            if is_credential_issue:
+                msg = "❌ Falha na emissao: credenciais invalidas ou expiradas. Atualize seus dados com a opcao 3."
+            else:
+                msg = "❌ Falha ao emitir a NFS-e. Tente novamente mais tarde ou contate o suporte (opcao 4)."
+            await evolution_client.send_text(sender, msg)
             return
 
         await self._sessions.reset(conv)
