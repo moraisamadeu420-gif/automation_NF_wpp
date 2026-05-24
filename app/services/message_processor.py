@@ -314,7 +314,9 @@ class MessageProcessor:
         "Comandos admin:\n\n"
         "ATIVAR <número> — ativa por {days} dias (padrão)\n"
         "ATIVAR <número> <dias> — ativa por N dias\n"
+        "CANCELAR <número> — cancela assinatura do usuário\n"
         "STATUS <número> — situação da assinatura\n"
+        "LISTAR — todos os usuários com status\n"
         "BLOQUEAR <número> — bloqueia acesso\n"
         "DESBLOQUEAR <número> — remove bloqueio\n"
         "ADMIN — exibe este menu"
@@ -352,6 +354,32 @@ class MessageProcessor:
             await evolution_client.send_text(
                 target_number,
                 f"✅ Sua assinatura foi ativada!\nAcesso garantido até {expires.strftime('%d/%m/%Y') if expires else '?'}.",
+            )
+            return True
+
+        if cmd == "LISTAR":
+            await self._handle_admin_listar(sender)
+            return True
+
+        if cmd == "CANCELAR" and len(parts) >= 2:
+            target_number = re.sub(r"\D", "", parts[1])
+            target = await self._users.get_by_number(target_number)
+            if not target:
+                await evolution_client.send_text(sender, f"Usuário {target_number} não encontrado.")
+                return True
+            if not UserService.subscription_active(target):
+                await evolution_client.send_text(sender, f"Usuário {target_number} não tem assinatura ativa.")
+                return True
+            await self._users.cancel_subscription(target)
+            expires = target.subscription_expires_at
+            expires_str = expires.strftime("%d/%m/%Y") if expires else "?"
+            await evolution_client.send_text(
+                sender,
+                f"✅ Assinatura de {target_number} cancelada. Acesso até {expires_str}.",
+            )
+            await evolution_client.send_text(
+                target_number,
+                f"ℹ️ Sua assinatura foi cancelada pelo administrador.\nVocê tem acesso até {expires_str}.\n\nDigite ASSINAR para reativar.",
             )
             return True
 
@@ -396,6 +424,67 @@ class MessageProcessor:
             return True
 
         return False
+
+    async def _handle_admin_listar(self, sender: str) -> None:
+        users = await self._users.list_all()
+        if not users:
+            await evolution_client.send_text(sender, "Nenhum usuário cadastrado.")
+            return
+
+        now = datetime.now()
+        lines: list[str] = []
+        totals = {"ativos": 0, "expirando": 0, "expirados": 0, "bloqueados": 0, "trial": 0}
+
+        for u in users:
+            number = u.whatsapp_number
+            name = u.name or "—"
+            blocked = u.is_blocked
+            active = UserService.subscription_active(u)
+            days = UserService.days_remaining(u)
+            trial = UserService.is_trial(u)
+            cancelled = UserService.is_cancelled(u)
+            expires = u.subscription_expires_at
+            expires_str = expires.strftime("%d/%m") if expires else "ilimitado"
+
+            if blocked:
+                icon = "⛔"
+                status = "bloqueado"
+                totals["bloqueados"] += 1
+            elif not active:
+                icon = "❌"
+                status = f"expirado em {expires_str}"
+                totals["expirados"] += 1
+            elif trial:
+                icon = "🆓"
+                status = f"trial até {expires_str}"
+                totals["trial"] += 1
+            elif days <= 7:
+                icon = "⚠️"
+                status = f"expira {expires_str} ({days}d)"
+                totals["expirando"] += 1
+            else:
+                icon = "✅"
+                status = f"ativo até {expires_str}"
+                totals["ativos"] += 1
+
+            cancelled_tag = " [cancelado]" if cancelled and active else ""
+            lines.append(f"{icon} {name} | {number} | {status}{cancelled_tag}")
+
+        total = len(users)
+        header = (
+            f"👥 *Usuários ({total} total)*\n"
+            f"✅ {totals['ativos']} ativos · ⚠️ {totals['expirando']} expirando · "
+            f"❌ {totals['expirados']} expirados · 🆓 {totals['trial']} trial · "
+            f"⛔ {totals['bloqueados']} bloqueados\n"
+            f"{'─' * 30}"
+        )
+
+        # Envia em blocos de 30 para não estourar o limite do WhatsApp
+        chunk_size = 30
+        for i in range(0, len(lines), chunk_size):
+            chunk = lines[i:i + chunk_size]
+            prefix = header if i == 0 else f"_(continuação {i // chunk_size + 1})_"
+            await evolution_client.send_text(sender, prefix + "\n" + "\n".join(chunk))
 
     # ── CORRIGIR / VOLTAR ────────────────────────────────────────────────────
 

@@ -28,3 +28,9 @@ class UserRepository(BaseRepository[User]):
         user = User(whatsapp_number=number)
         await self.save(user)
         return user, True
+
+    async def list_all(self) -> list[User]:
+        result = await self._session.execute(
+            select(User).order_by(User.created_at.desc())
+        )
+        return list(result.scalars().all())

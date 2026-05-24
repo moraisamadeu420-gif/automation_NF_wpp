@@ -31,6 +31,9 @@ class UserService:
     async def get_by_number(self, whatsapp_number: str) -> User | None:
         return await self._users.get_by_whatsapp_number(whatsapp_number)
 
+    async def list_all(self) -> list[User]:
+        return await self._users.list_all()
+
     async def get_active_credential(self, user_id: int) -> NfseCredential | None:
         return await self._credentials.get_active_by_user(user_id)
 
