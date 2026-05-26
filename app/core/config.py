@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # Usada para registrar notification_url nas preferências do MP
     bot_public_url: str = ""
 
+    # URL pública do vídeo tutorial (MP4 direto, Google Drive, etc.)
+    # Enviado automaticamente para novos usuários no primeiro contato
+    tutorial_video_url: str = ""
+
     # Admin
     admin_number: str = ""
 

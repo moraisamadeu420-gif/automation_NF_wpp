@@ -63,6 +63,7 @@ _BACK_MAP = {
 }
 
 _ONBOARDING_STATES = {
+    ConversationState.ONBOARDING_WELCOME,
     ConversationState.ONBOARDING_NAME,
     ConversationState.ONBOARDING_USERNAME,
     ConversationState.ONBOARDING_PASSWORD,
@@ -280,6 +281,8 @@ class MessageProcessor:
 
         if state == ConversationState.IDLE:
             await self._handle_idle(sender, user, conv, text, is_new_user)
+        elif state == ConversationState.ONBOARDING_WELCOME:
+            await self._handle_onboarding_welcome(sender, user, conv, text)
         elif state == ConversationState.ONBOARDING_NAME:
             await self._handle_onboarding_name(sender, user, conv, text)
         elif state == ConversationState.ONBOARDING_USERNAME:
@@ -526,13 +529,32 @@ class MessageProcessor:
         is_configured = await self._users.user_is_configured(user.id)
 
         if not is_configured:
-            await self._sessions.transition(conv, ConversationState.ONBOARDING_NAME)
             if is_new_user:
+                await self._sessions.transition(conv, ConversationState.ONBOARDING_WELCOME)
+                if settings.tutorial_video_url:
+                    try:
+                        await evolution_client.send_video(
+                            sender,
+                            settings.tutorial_video_url,
+                            caption="👆 Assista antes de começar — leva menos de 2 minutos!",
+                        )
+                    except Exception as exc:
+                        logger.warning("Falha ao enviar vídeo tutorial para {}: {}", sender, exc)
                 await evolution_client.send_text(
                     sender,
-                    f"👋 Bem-vindo!\n🎁 Aproveite {settings.trial_days} dias grátis para testar.\n\n Digite seu nome completo:",
+                    f"👋 Olá! Bem-vindo ao *Bot NFSe*!\n\n"
+                    f"Sou um assistente que emite sua Nota Fiscal de Serviço (NFS-e) "
+                    f"automaticamente pelo portal Emissor Nacional.\n\n"
+                    f"✅ *O que faço por você:*\n"
+                    f"• Emito sua NFS-e toda semana sem você precisar entrar no portal\n"
+                    f"• Aviso toda segunda-feira para você informar o valor\n"
+                    f"• Guardo o histórico completo de todas as suas notas\n"
+                    f"• Você só informa o valor — eu preencho e envio tudo\n\n"
+                    f"🎁 *{settings.trial_days} dias grátis* para você testar, sem precisar de cartão.\n\n"
+                    f"Quer começar o cadastro? Responda *SIM*",
                 )
             else:
+                await self._sessions.transition(conv, ConversationState.ONBOARDING_NAME)
                 await evolution_client.send_text(sender, _ONBOARDING_WELCOME)
             return
 
@@ -592,6 +614,23 @@ class MessageProcessor:
         )
 
     # ── ONBOARDING ────────────────────────────────────────────────────────────
+
+    async def _handle_onboarding_welcome(self, sender, user, conv, text) -> None:
+        upper = text.upper()
+        if upper in ("SIM", "S", "COMEÇAR", "COMECAR", "INICIAR", "START", "1"):
+            await self._sessions.transition(conv, ConversationState.ONBOARDING_NAME)
+            await evolution_client.send_text(sender, "Ótimo! Vamos começar. 😊\n\n" + _with_back("Qual é o seu nome completo?"))
+        elif upper in ("NAO", "NÃO", "N", "CANCELAR", "NAO QUERO"):
+            await self._sessions.reset(conv)
+            await evolution_client.send_text(
+                sender,
+                "Tudo bem! Se mudar de ideia é só mandar uma mensagem aqui. 👋",
+            )
+        else:
+            await evolution_client.send_text(
+                sender,
+                "Responda *SIM* para começar o cadastro ou *NÃO* para cancelar.",
+            )
 
     async def _handle_onboarding_name(self, sender, user, conv, text) -> None:
         if not text:

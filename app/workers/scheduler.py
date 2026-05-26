@@ -149,6 +149,71 @@ async def subscription_reminder_job() -> None:
     logger.info("Scheduler: expiry reminder job done — {} users checked", len(users))
 
 
+async def trial_expired_upsell_job() -> None:
+    """Sends a payment link on the day after trial expires (day 16).
+    Targets only users whose trial expired in the last 24-48 hours and
+    who have not yet paid (no active subscription extension)."""
+    logger.info("Scheduler: running trial expired upsell job")
+    now = datetime.now()
+    window_low = now - timedelta(hours=48)
+    window_high = now - timedelta(hours=24)
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(User).where(
+                User.is_active == True,   # noqa: E712
+                User.is_blocked == False, # noqa: E712
+                User.subscription_expires_at.between(window_low, window_high),
+                User.subscription_cancelled_at.is_(None),
+                User.last_payment_id.is_(None),
+            )
+        )
+        users = result.scalars().all()
+
+        for user in users:
+            try:
+                # Only target trial users (expires within trial window from creation)
+                trial_cutoff = user.created_at + timedelta(days=settings.trial_days + 1)
+                if user.subscription_expires_at > trial_cutoff:
+                    continue  # paid subscriber who expired — skip
+
+                from app.integrations.mercadopago.client import mp_client
+                try:
+                    avulso_url = await asyncio.to_thread(
+                        mp_client.create_preference, user.id, user.whatsapp_number
+                    )
+                except Exception:
+                    avulso_url = None
+
+                msg = (
+                    f"👋 Olá! Seu período gratuito de {settings.trial_days} dias encerrou.\n\n"
+                    f"Espero que tenha aproveitado bem o bot! 😊\n\n"
+                    f"Para continuar emitindo suas NFS-e automaticamente:\n\n"
+                )
+
+                if avulso_url:
+                    msg += (
+                        f"💳 *Pagamento avulso* — R$ {settings.subscription_price:.2f}/mês\n"
+                        f"Ativação automática após o pagamento:\n"
+                        f"👉 {avulso_url}\n\n"
+                    )
+
+                if settings.mercadopago_plan_url:
+                    msg += (
+                        f"🔄 *Assinatura recorrente* (débito automático):\n"
+                        f"👉 {settings.mercadopago_plan_url}\n\n"
+                    )
+
+                msg += "Qualquer dúvida é só chamar aqui! 🙂"
+
+                await evolution_client.send_text(user.whatsapp_number, msg)
+                logger.info("Trial upsell sent to {} (expired {})", user.whatsapp_number, user.subscription_expires_at.date())
+            except Exception as exc:
+                logger.error("Failed to send trial upsell to {}: {}", user.whatsapp_number, exc)
+
+    logger.info("Scheduler: trial upsell job done — {} users checked", len(users))
+
+
 def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
     scheduler.add_job(
@@ -167,6 +232,12 @@ def create_scheduler() -> AsyncIOScheduler:
         cancelled_user_cleanup_job,
         CronTrigger(hour=2, minute=0, timezone="America/Sao_Paulo"),
         id="cancelled_user_cleanup",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        trial_expired_upsell_job,
+        CronTrigger(hour=10, minute=0, timezone="America/Sao_Paulo"),
+        id="trial_expired_upsell",
         replace_existing=True,
     )
     return scheduler

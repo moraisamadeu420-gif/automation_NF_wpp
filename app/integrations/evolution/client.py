@@ -65,6 +65,20 @@ class EvolutionClient:
             "fileName": image_path.name,
         })
 
+    async def send_video(self, number: str, video_url: str, caption: str = "") -> None:
+        """Envia vídeo MP4 a partir de uma URL pública (Google Drive, CDN, etc.)."""
+        if self._dry_run:
+            logger.info("[DRY RUN] send_video → {} | url: {} | caption: {}", number, video_url, caption)
+            return
+        url = f"{self._base_url}/message/sendMedia/{self._instance}"
+        await self._post(url, {
+            "number": number,
+            "mediatype": "video",
+            "mimetype": "video/mp4",
+            "caption": caption,
+            "media": video_url,
+        })
+
     async def download_media(self, message_id: str) -> bytes:
         if self._dry_run:
             logger.info("[DRY RUN] download_media → id: {}", message_id)

@@ -13,6 +13,7 @@ from app.database.connection import Base
 
 class ConversationState(str, Enum):
     IDLE = "idle"
+    ONBOARDING_WELCOME = "onboarding_welcome"
     ONBOARDING_NAME = "onboarding_name"
     ONBOARDING_USERNAME = "onboarding_username"
     ONBOARDING_PASSWORD = "onboarding_password"
