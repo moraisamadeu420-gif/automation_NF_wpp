@@ -71,7 +71,7 @@ class EvolutionClient:
             logger.info("[DRY RUN] send_video → {} | url: {} | caption: {}", number, video_url, caption)
             return
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-            response = await client.get(video_url)
+            response = await client.get(video_url.strip())
         if response.status_code != 200:
             raise EvolutionApiError(f"Failed to download video: HTTP {response.status_code}", status_code=response.status_code)
         video_b64 = base64.b64encode(response.content).decode()
