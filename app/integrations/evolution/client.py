@@ -66,17 +66,23 @@ class EvolutionClient:
         })
 
     async def send_video(self, number: str, video_url: str, caption: str = "") -> None:
-        """Envia vídeo MP4 a partir de uma URL pública (Google Drive, CDN, etc.)."""
+        """Envia vídeo MP4 a partir de uma URL pública. Baixa o arquivo e envia como base64."""
         if self._dry_run:
             logger.info("[DRY RUN] send_video → {} | url: {} | caption: {}", number, video_url, caption)
             return
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            response = await client.get(video_url)
+        if response.status_code != 200:
+            raise EvolutionApiError(f"Failed to download video: HTTP {response.status_code}", status_code=response.status_code)
+        video_b64 = base64.b64encode(response.content).decode()
         url = f"{self._base_url}/message/sendMedia/{self._instance}"
         await self._post(url, {
             "number": number,
             "mediatype": "video",
             "mimetype": "video/mp4",
             "caption": caption,
-            "media": video_url,
+            "media": video_b64,
+            "fileName": "tutorial.mp4",
         })
 
     async def download_media(self, message_id: str) -> bytes:
