@@ -161,6 +161,15 @@ class MessageProcessor:
         state = ConversationState(conv.state)
         text = (message.message.text or "").strip()
 
+        # Salva o código do afiliado se a mensagem inicial vier com REF:codigo
+        if text.upper().startswith("REF:") and not user.affiliate_code:
+            code = text[4:].strip().lower()
+            if code:
+                user.affiliate_code = code
+                await self._session.commit()
+                logger.info("Affiliate code '{}' saved for user {}", code, sender)
+            text = ""
+
         logger.info("Message from {} | state: {} | text: '{}'", sender, state, text[:80])
 
         # ── Timeout: reseta sessão inativa ────────────────────────────────────
@@ -735,7 +744,7 @@ class MessageProcessor:
 
             from app.integrations.mercadopago.client import mp_client
             try:
-                url = await asyncio.to_thread(mp_client.create_preference, user.id, sender)
+                url = await asyncio.to_thread(mp_client.create_preference, user.id, sender, user.affiliate_code)
                 payment_line = (
                     f"Quer garantir sua assinatura agora? R$ {settings.subscription_price:.2f}/mês:\n"
                     f"👉 {url}\n\n"
@@ -1010,7 +1019,7 @@ class MessageProcessor:
         """Send payment links: one-time (auto-activate) + recurring plan (manual activate)."""
         from app.integrations.mercadopago.client import mp_client
         try:
-            avulso_url = await asyncio.to_thread(mp_client.create_preference, user.id, sender)
+            avulso_url = await asyncio.to_thread(mp_client.create_preference, user.id, sender, user.affiliate_code)
         except Exception as exc:
             logger.warning("MP preference creation failed for {}: {}", sender, exc)
             avulso_url = None
@@ -1043,7 +1052,7 @@ class MessageProcessor:
     async def _send_subscription_expired(self, sender: str, user) -> None:
         from app.integrations.mercadopago.client import mp_client
         try:
-            avulso_url = await asyncio.to_thread(mp_client.create_preference, user.id, sender)
+            avulso_url = await asyncio.to_thread(mp_client.create_preference, user.id, sender, user.affiliate_code)
         except Exception as exc:
             logger.warning("MP preference creation failed for {}: {}", sender, exc)
             avulso_url = None

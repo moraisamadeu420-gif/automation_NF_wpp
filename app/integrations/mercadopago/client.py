@@ -12,10 +12,14 @@ class MercadoPagoClient:
     def _sdk(self) -> mercadopago.SDK:
         return mercadopago.SDK(settings.mercadopago_access_token)
 
-    def create_preference(self, user_id: int, whatsapp_number: str) -> str:
+    def create_preference(self, user_id: int, whatsapp_number: str, affiliate_code: str | None = None) -> str:
         """Creates a one-time checkout preference. Returns the init_point URL."""
         if not settings.mercadopago_access_token:
             raise RuntimeError("MERCADOPAGO_ACCESS_TOKEN not configured")
+
+        metadata: dict = {"user_id": user_id, "whatsapp_number": whatsapp_number}
+        if affiliate_code:
+            metadata["affiliate_code"] = affiliate_code
 
         preference_data: dict = {
             "items": [{
@@ -25,7 +29,7 @@ class MercadoPagoClient:
                 "currency_id": "BRL",
             }],
             "external_reference": str(user_id),
-            "metadata": {"user_id": user_id, "whatsapp_number": whatsapp_number},
+            "metadata": metadata,
         }
         if settings.bot_public_url:
             preference_data["notification_url"] = (

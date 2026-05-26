@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # Enviado automaticamente para novos usuários no primeiro contato
     tutorial_video_url: str = ""
 
+    # Affiliate system integration
+    affiliate_api_url: str = ""
+    affiliate_api_key: str = ""
+
     # Admin
     admin_number: str = ""
 

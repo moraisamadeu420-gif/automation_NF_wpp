@@ -63,6 +63,25 @@ async def _handle_payment(payment_id: str) -> None:
         _PROCESSING.discard(payment_id)
 
 
+async def _notify_affiliate(affiliate_code: str, whatsapp_number: str) -> None:
+    import httpx
+    url = settings.affiliate_api_url
+    key = settings.affiliate_api_key
+    if not url or not key:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{url.rstrip('/')}/api/conversion",
+                data={"affiliate_code": affiliate_code, "whatsapp_number": whatsapp_number},
+                headers={"X-Api-Key": key},
+                timeout=10,
+            )
+        logger.info("Affiliate conversion registered for code '{}'", affiliate_code)
+    except Exception as exc:
+        logger.warning("Failed to notify affiliate system for code '{}': {}", affiliate_code, exc)
+
+
 async def _process_payment(payment_id: str) -> None:
     import asyncio
     from app.integrations.mercadopago.client import mp_client
@@ -104,6 +123,10 @@ async def _process_payment(payment_id: str) -> None:
         user.subscription_cancelled_at = None
         user.last_payment_id = payment_id
         await session.commit()
+
+        affiliate_code = payment.get("metadata", {}).get("affiliate_code", "")
+        if affiliate_code:
+            await _notify_affiliate(affiliate_code, whatsapp_number or user.whatsapp_number)
 
         expires = user.subscription_expires_at
         expires_str = expires.strftime("%d/%m/%Y") if expires else "?"
