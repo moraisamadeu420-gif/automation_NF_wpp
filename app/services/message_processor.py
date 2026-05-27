@@ -33,7 +33,8 @@ _MENU = (
     "3 - Atualizar dados\n"
     "4 - Suporte\n"
     "5 - Assinaturas\n"
-    "6 - Somar notas"
+    "6 - Somar notas\n"
+    "7 - Configurar horário do lembrete semanal"
 )
 
 _SUBSCRIPTION_SUBMENU = (
@@ -601,6 +602,16 @@ class MessageProcessor:
             await self._send_total(sender, user)
             return
 
+        if text_upper == "7":
+            hour = user.reminder_hour if user.reminder_hour is not None else 9
+            minute = user.reminder_minute if user.reminder_minute is not None else 0
+            await evolution_client.send_text(
+                sender,
+                f"Seu lembrete semanal esta configurado para toda segunda-feira as {hour:02d}:{minute:02d}.\n\n"
+                "Para alterar, envie HORARIO HH:MM\nExemplo: HORARIO 08:30",
+            )
+            return
+
         menu_personalizado = (
             f"{name}, o que deseja?\n\n"
             "1 - Emitir NFS-e\n"
@@ -608,7 +619,8 @@ class MessageProcessor:
             "3 - Atualizar dados\n"
             "4 - Suporte\n"
             "5 - Assinaturas\n"
-            "6 - Somar notas"
+            "6 - Somar notas\n"
+            "7 - Configurar horário do lembrete semanal"
         )
 
         if text_upper in ("MENU", "INICIO", "INÍCIO", "OI", "OLA", "OLÁ"):
@@ -762,9 +774,12 @@ class MessageProcessor:
 
             await evolution_client.send_text(
                 sender,
-                f"✅ Configurado! {settings.trial_days} dias grátis — expira {expires_str}\n\n"
+                f"✅ Tudo pronto! Você tem *{settings.trial_days} dias grátis* — acesso até {expires_str}.\n\n"
                 f"{payment_line}"
-                "Envie 1 para emitir sua NFS-e.",
+                "Envie *1* para emitir sua primeira NFS-e.\n\n"
+                "💡 Toda segunda-feira vou te lembrar de registrar seus ganhos da semana.\n"
+                "Para ajustar o horário do lembrete, envie *HORARIO HH:MM*.\n"
+                "Exemplo: HORARIO 08:30",
             )
         else:
             await evolution_client.send_text(sender, "✅ Dados atualizados! Envie 1 para emitir.")
