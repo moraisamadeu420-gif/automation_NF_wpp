@@ -50,7 +50,8 @@ _HELP_MSG = (
     "REEMBOLSO — solicitar reembolso\n"
     "CANCELAR — cancelar operação\n"
     "VOLTAR — passo anterior\n"
-    "MENU — menu principal"
+    "MENU — menu principal\n"
+    "HORARIO HH:MM — alterar horário do lembrete semanal"
 )
 
 _ONBOARDING_WELCOME = "Seu nome completo:"
@@ -225,6 +226,10 @@ class MessageProcessor:
 
         if text_upper in ("REEMBOLSO", "REEMBOLSAR", "REEMBOLSO PAGAMENTO"):
             await self._handle_refund_request(sender, user)
+            return
+
+        if text_upper.startswith("HORARIO "):
+            await self._handle_set_reminder(sender, user, text)
             return
 
         if state not in _SUBSCRIPTION_EXEMPT_STATES and not UserService.subscription_active(user):
@@ -1096,6 +1101,41 @@ class MessageProcessor:
             "✅ Solicitação de reembolso enviada!\n\n"
             "Nossa equipe entrará em contato em breve para verificar seu pagamento.\n\n"
             f"Ou fale diretamente pelo suporte:\n👉 {self._admin_wa_link()}",
+        )
+
+    async def _handle_set_reminder(self, sender: str, user, text: str) -> None:
+        match = re.match(r"HORARIO\s+(\d{1,2}):(\d{2})", text.upper())
+        if not match:
+            await evolution_client.send_text(
+                sender,
+                "Formato invalido. Use HORARIO HH:MM\nExemplo: HORARIO 08:30",
+            )
+            return
+
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+
+        if hour < 6 or hour > 22 or minute > 59:
+            await evolution_client.send_text(
+                sender,
+                "Horario invalido. Escolha entre 06:00 e 22:00.",
+            )
+            return
+
+        # Arredonda para o múltiplo de 5 mais próximo
+        minute = round(minute / 5) * 5
+        if minute == 60:
+            hour += 1
+            minute = 0
+
+        user.reminder_hour = hour
+        user.reminder_minute = minute
+        await self._session.commit()
+
+        await evolution_client.send_text(
+            sender,
+            f"Horario atualizado! Voce sera lembrado toda segunda-feira as {hour:02d}:{minute:02d}.\n\n"
+            "Para alterar novamente use HORARIO HH:MM.",
         )
 
     async def _handle_payment_receipt(self, sender: str, user, payment_id: str) -> None:

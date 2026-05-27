@@ -24,7 +24,16 @@ from app.utils.period import format_period, previous_week_period
 
 
 async def weekly_prompt_job() -> None:
-    logger.info("Scheduler: running weekly NFSe prompt job")
+    now = datetime.now()
+    current_hour = now.hour
+    # Arredonda para o múltiplo de 5 mais próximo para bater com o horário salvo
+    current_minute = round(now.minute / 5) * 5
+    if current_minute == 60:
+        current_hour += 1
+        current_minute = 0
+
+    logger.info("Scheduler: weekly prompt — buscando usuários com lembrete {:02d}:{:02d}", current_hour, current_minute)
+
     start, end = previous_week_period()
     period_str = format_period(start, end)
 
@@ -32,7 +41,12 @@ async def weekly_prompt_job() -> None:
         result = await session.execute(
             select(User)
             .join(NfseCredential, NfseCredential.user_id == User.id)
-            .where(User.is_active == True, NfseCredential.is_active == True)  # noqa: E712
+            .where(
+                User.is_active == True,           # noqa: E712
+                NfseCredential.is_active == True,  # noqa: E712
+                User.reminder_hour == current_hour,
+                User.reminder_minute == current_minute,
+            )
             .options(selectinload(User.session))
         )
         users = result.scalars().unique().all()
@@ -218,7 +232,7 @@ def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
     scheduler.add_job(
         weekly_prompt_job,
-        CronTrigger(day_of_week="mon", hour=9, minute=0, timezone="America/Sao_Paulo"),
+        CronTrigger(day_of_week="mon", minute="*/5", timezone="America/Sao_Paulo"),
         id="weekly_nfse_prompt",
         replace_existing=True,
     )
