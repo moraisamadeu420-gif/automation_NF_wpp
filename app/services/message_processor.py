@@ -229,8 +229,8 @@ class MessageProcessor:
             await self._handle_refund_request(sender, user)
             return
 
-        if text_upper.startswith("HORARIO "):
-            await self._handle_set_reminder(sender, user, text)
+        if text_upper == "HORARIO" or text_upper.startswith("HORARIO "):
+            await self._handle_set_reminder(sender, user, conv, text)
             return
 
         if state not in _SUBSCRIPTION_EXEMPT_STATES and not UserService.subscription_active(user):
@@ -316,6 +316,8 @@ class MessageProcessor:
             await self._handle_cancellation_confirm(sender, user, conv, text)
         elif state == ConversationState.SUBSCRIPTION_MENU:
             await self._handle_subscription_menu(sender, user, conv, text)
+        elif state == ConversationState.AWAITING_REMINDER:
+            await self._handle_awaiting_reminder(sender, user, conv, text)
 
     # ── ADMIN ────────────────────────────────────────────────────────────────
 
@@ -605,10 +607,11 @@ class MessageProcessor:
         if text_upper == "7":
             hour = user.reminder_hour if user.reminder_hour is not None else 9
             minute = user.reminder_minute if user.reminder_minute is not None else 0
+            await self._sessions.transition(conv, ConversationState.AWAITING_REMINDER)
             await evolution_client.send_text(
                 sender,
-                f"Seu lembrete semanal esta configurado para toda segunda-feira as {hour:02d}:{minute:02d}.\n\n"
-                "Para alterar, envie HORARIO HH:MM\nExemplo: HORARIO 08:30",
+                f"Seu lembrete esta configurado para toda segunda-feira as {hour:02d}:{minute:02d}.\n\n"
+                "Qual horario deseja? Digite no formato HH:MM\nExemplo: 08:30",
             )
             return
 
@@ -778,8 +781,7 @@ class MessageProcessor:
                 f"{payment_line}"
                 "Envie *1* para emitir sua primeira NFS-e.\n\n"
                 "💡 Toda segunda-feira vou te lembrar de registrar seus ganhos da semana.\n"
-                "Para ajustar o horário do lembrete, envie *HORARIO HH:MM*.\n"
-                "Exemplo: HORARIO 08:30",
+                "Para ajustar o horário do lembrete, envie *HORARIO* ou *7* no menu.",
             )
         else:
             await evolution_client.send_text(sender, "✅ Dados atualizados! Envie 1 para emitir.")
@@ -1118,18 +1120,39 @@ class MessageProcessor:
             f"Ou fale diretamente pelo suporte:\n👉 {self._admin_wa_link()}",
         )
 
-    async def _handle_set_reminder(self, sender: str, user, text: str) -> None:
+    async def _handle_set_reminder(self, sender: str, user, conv, text: str) -> None:
         match = re.match(r"HORARIO\s+(\d{1,2}):(\d{2})", text.upper())
         if not match:
+            # Bare "HORARIO" — ask for the time
+            hour = user.reminder_hour if user.reminder_hour is not None else 9
+            minute = user.reminder_minute if user.reminder_minute is not None else 0
+            await self._sessions.transition(conv, ConversationState.AWAITING_REMINDER)
             await evolution_client.send_text(
                 sender,
-                "Formato invalido. Use HORARIO HH:MM\nExemplo: HORARIO 08:30",
+                f"Seu lembrete esta configurado para toda segunda-feira as {hour:02d}:{minute:02d}.\n\n"
+                "Qual horario deseja? Digite no formato HH:MM\nExemplo: 08:30",
             )
             return
 
         hour = int(match.group(1))
         minute = int(match.group(2))
+        await self._save_reminder(sender, user, hour, minute)
 
+    async def _handle_awaiting_reminder(self, sender: str, user, conv, text: str) -> None:
+        match = re.match(r"(\d{1,2}):(\d{2})", text.strip())
+        if not match:
+            await evolution_client.send_text(
+                sender,
+                "Formato invalido. Digite apenas o horario no formato HH:MM\nExemplo: 08:30",
+            )
+            return
+
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        await self._sessions.reset(conv)
+        await self._save_reminder(sender, user, hour, minute)
+
+    async def _save_reminder(self, sender: str, user, hour: int, minute: int) -> None:
         if hour < 6 or hour > 22 or minute > 59:
             await evolution_client.send_text(
                 sender,
@@ -1137,7 +1160,6 @@ class MessageProcessor:
             )
             return
 
-        # Arredonda para o múltiplo de 5 mais próximo
         minute = round(minute / 5) * 5
         if minute == 60:
             hour += 1
@@ -1149,8 +1171,7 @@ class MessageProcessor:
 
         await evolution_client.send_text(
             sender,
-            f"Horario atualizado! Voce sera lembrado toda segunda-feira as {hour:02d}:{minute:02d}.\n\n"
-            "Para alterar novamente use HORARIO HH:MM.",
+            f"Horario atualizado! Voce sera lembrado toda segunda-feira as {hour:02d}:{minute:02d}.",
         )
 
     async def _handle_payment_receipt(self, sender: str, user, payment_id: str) -> None:
