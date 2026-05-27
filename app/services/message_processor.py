@@ -11,6 +11,7 @@ States:
 """
 import asyncio
 import re
+import unicodedata
 from datetime import datetime, timedelta
 
 from loguru import logger
@@ -25,6 +26,13 @@ from app.repositories.session_repository import SessionRepository
 from app.services.nfse_service import NfseService
 from app.services.user_service import UserService
 from app.utils.period import format_period, previous_week_period
+
+
+def _normalize(text: str) -> str:
+    """Upper-case and strip accents so 'horário' == 'HORARIO'."""
+    nfkd = unicodedata.normalize("NFD", text)
+    return nfkd.encode("ascii", "ignore").decode("ascii").upper()
+
 
 _MENU = (
     "O que deseja fazer?\n\n"
@@ -164,7 +172,7 @@ class MessageProcessor:
         text = (message.message.text or "").strip()
 
         # Salva o código do afiliado se a mensagem inicial vier com REF:codigo
-        if text.upper().startswith("REF:") and not user.affiliate_code:
+        if _normalize(text).startswith("REF:") and not user.affiliate_code:
             code = text[4:].strip().lower()
             if code:
                 user.affiliate_code = code
@@ -209,7 +217,7 @@ class MessageProcessor:
             )
             return
 
-        text_upper = text.upper()
+        text_upper = _normalize(text)
 
         # ── Comprovante MP: número puro de 8-13 dígitos ─────────────────────
         # Só verifica fora do onboarding/emissão para não confundir CNPJ ou valor
@@ -575,7 +583,7 @@ class MessageProcessor:
                 await evolution_client.send_text(sender, _ONBOARDING_WELCOME)
             return
 
-        text_upper = text.upper()
+        text_upper = _normalize(text)
         name = user.name or "você"
 
         if text_upper in ("1", "EMITIR", "NOTA", "NFSE"):
