@@ -35,6 +35,20 @@ def _normalize(text: str) -> str:
     return nfkd.encode("ascii", "ignore").decode("ascii").upper()
 
 
+_QUESTION_STARTERS = (
+    "OQUE ", "O QUE ", "PRA QUE", "PARA QUE", "COMO ", "QUANDO ",
+    "ONDE ", "POR QUE", "QUAL ", "QUAIS ", "TEM COMO", "SERVE ",
+    "O BOT", "ISSO E", "ISSO É",
+)
+
+
+def _is_likely_question(text: str) -> bool:
+    if "?" in text:
+        return True
+    upper = _normalize(text)
+    return any(upper.startswith(s) for s in _QUESTION_STARTERS)
+
+
 _MENU = (
     "O que deseja fazer?\n\n"
     "1 - Emitir NFS-e\n"
@@ -133,6 +147,20 @@ class MessageProcessor:
         self._users = UserService(session)
         self._sessions = SessionRepository(session)
         self._nfse = NfseService(session)
+
+    async def _faq_intercept(self, sender: str, text: str, reprompt: str) -> bool:
+        """
+        If text looks like a question, answer with Claude and re-prompt the current step.
+        Returns True if handled as FAQ (caller should return early).
+        """
+        if not _is_likely_question(text):
+            return False
+        result = await anthropic_client.classify_or_answer(text)
+        if result.get("action") == "faq":
+            await evolution_client.send_text(sender, result["answer"])
+            await evolution_client.send_text(sender, reprompt)
+            return True
+        return False
 
     async def process(self, message: WebhookMessage) -> None:
         number = message.key.remote_jid
@@ -687,11 +715,13 @@ class MessageProcessor:
     # ── ONBOARDING ────────────────────────────────────────────────────────────
 
     async def _handle_onboarding_welcome(self, sender, user, conv, text) -> None:
-        upper = text.upper()
-        if upper in ("SIM", "S", "COMEÇAR", "COMECAR", "INICIAR", "START", "1"):
+        upper = _normalize(text)
+        if upper in ("SIM", "S", "COMECAR", "INICIAR", "START", "1",
+                     "PODE SER", "PODE", "CLARO", "BORA", "VAMOS", "QUERO",
+                     "QUERO SIM", "OK", "TOPO", "VAI", "VAMO"):
             await self._sessions.transition(conv, ConversationState.ONBOARDING_NAME)
             await evolution_client.send_text(sender, "Ótimo! Vamos começar. 😊\n\n" + _with_back("Qual é o seu nome completo?"))
-        elif upper in ("NAO", "NÃO", "N", "CANCELAR", "NAO QUERO"):
+        elif upper in ("NAO", "NAO QUERO", "N", "CANCELAR", "AGORA NAO", "AGORA NÃO", "DEPOIS", "OBRIGADO NAO"):
             await self._sessions.reset(conv)
             await evolution_client.send_text(
                 sender,
@@ -725,6 +755,8 @@ class MessageProcessor:
         if not text:
             await evolution_client.send_text(sender, _with_back("Por favor, informe seu nome."))
             return
+        if await self._faq_intercept(sender, text, _with_back("Qual é o seu nome completo?")):
+            return
         user.name = text
         ctx = {"nome": text}
         await self._sessions.transition(conv, ConversationState.ONBOARDING_USERNAME, ctx)
@@ -747,6 +779,8 @@ class MessageProcessor:
 
     async def _handle_onboarding_username(self, sender, user, conv, text) -> None:
         if not text or not _validate_cnpj(text):
+            if await self._faq_intercept(sender, text, _with_back("Informe seu CNPJ de login (somente números):")):
+                return
             await evolution_client.send_text(
                 sender,
                 _with_back("CNPJ invalido. Informe no formato 00.000.000/0000-00 (14 digitos):"),
@@ -1231,6 +1265,19 @@ class MessageProcessor:
     async def _handle_awaiting_reminder(self, sender: str, user, conv, text: str) -> None:
         match = re.match(r"(\d{1,2}):(\d{2})", text.strip())
         if not match:
+            upper = _normalize(text)
+            keep_words = ("MANTER", "PODE MANTER", "DEIXA", "MANTEM", "MESMO",
+                          "ESSE MESMO", "PODE SER", "OK", "TUDO BEM", "ASSIM",
+                          "DEIXA ASSIM", "PODE DEIXAR", "CONTINUA")
+            if any(upper == w or upper.startswith(w + " ") for w in keep_words):
+                await self._sessions.reset(conv)
+                hour = user.reminder_hour if user.reminder_hour is not None else 9
+                minute = user.reminder_minute if user.reminder_minute is not None else 0
+                await evolution_client.send_text(
+                    sender,
+                    f"Certo! Lembrete mantido para toda segunda-feira as {hour:02d}:{minute:02d}. ✅",
+                )
+                return
             await evolution_client.send_text(
                 sender,
                 "Formato invalido. Digite apenas o horario no formato HH:MM\nExemplo: 08:30",
