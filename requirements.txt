@@ -31,3 +31,6 @@ cryptography>=42.0.0
 
 # Payments
 mercadopago>=2.2.0
+
+# AI
+anthropic>=0.40.0

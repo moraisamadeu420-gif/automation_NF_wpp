@@ -87,6 +87,14 @@ class NfseService:
         )
         return invoice
 
+    async def test_credentials(self, username: str, password: str) -> None:
+        """Try logging into the portal. Raises NfseEmissionError if credentials fail."""
+        from app.adapters.nacional_adapter import NacionalAdapter
+        adapter = NacionalAdapter()
+        await asyncio.get_event_loop().run_in_executor(
+            None, adapter.test_login, username, password
+        )
+
     @staticmethod
     def _build_description(template: str | None, period: str) -> str:
         base = template or "Serviços de entrega e logística prestados como motorista parceiro SPX Driver"

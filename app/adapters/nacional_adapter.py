@@ -77,6 +77,43 @@ class NacionalAdapter(BaseNfseAdapter):
                 context.close()
                 browser.close()
 
+    def test_login(self, username: str, password: str) -> None:
+        """Open the portal, attempt login, then close. Raises NfseEmissionError if credentials fail."""
+        if settings.dry_run or settings.nfse_dry_run:
+            logger.info("[DRY RUN] Simulando teste de login")
+            return
+
+        settings.ensure_directories()
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            context = browser.new_context(
+                viewport={"width": 1366, "height": 768},
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+            )
+            page = context.new_page()
+            try:
+                from app.adapters.base_adapter import EmissionRequest
+                dummy = EmissionRequest(
+                    username=username, password=password,
+                    value=0, period="", portal_url=_PORTAL_URL,
+                    prestador_nome="", prestador_cnpj="",
+                    tomador_cnpj="", tomador_razao_social="",
+                    service_description="", municipio="",
+                    aliquota_iss=0, headless=True, slow_mo=0, user_id=0,
+                )
+                self._login(page, dummy)
+            finally:
+                context.close()
+                browser.close()
+
     # ── 1. login ──────────────────────────────────────────────────────────────
 
     def _login(self, page: Page, request: EmissionRequest) -> None:

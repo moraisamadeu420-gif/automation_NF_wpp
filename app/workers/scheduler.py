@@ -6,8 +6,11 @@ APScheduler jobs:
 """
 import asyncio
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+BRT = ZoneInfo("America/Sao_Paulo")
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
 from sqlalchemy import select
@@ -24,7 +27,7 @@ from app.utils.period import format_period, previous_week_period
 
 
 async def weekly_prompt_job() -> None:
-    now = datetime.now()
+    now = datetime.now(tz=BRT)
     current_hour = now.hour
     # Arredonda para o múltiplo de 5 mais próximo para bater com o horário salvo
     current_minute = round(now.minute / 5) * 5

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import CredentialNotFoundError, NfseEmissionError
+from app.integrations.anthropic.client import anthropic_client
 from app.integrations.evolution.client import evolution_client
 from app.integrations.evolution.schemas import WebhookMessage
 from app.models.session import ConversationState
@@ -638,7 +639,40 @@ class MessageProcessor:
             await evolution_client.send_text(sender, menu_personalizado)
             return
 
-        await evolution_client.send_text(sender, menu_personalizado)
+        result = await anthropic_client.classify_or_answer(text)
+        action = result.get("action", "unknown")
+
+        if action == "menu":
+            option = result.get("option", "")
+            if option == "1":
+                await self._ask_for_value(sender, conv)
+            elif option == "2":
+                await self._send_history(sender, user)
+            elif option == "3":
+                await self._sessions.transition(conv, ConversationState.ONBOARDING_USERNAME)
+                await evolution_client.send_text(sender, _with_back("Informe seu CNPJ de login:"))
+            elif option == "4":
+                await evolution_client.send_text(sender, f"Falar com suporte:\n{self._admin_wa_link()}")
+            elif option == "5":
+                await self._sessions.transition(conv, ConversationState.SUBSCRIPTION_MENU)
+                await evolution_client.send_text(sender, _with_back(_SUBSCRIPTION_SUBMENU))
+            elif option == "6":
+                await self._send_total(sender, user)
+            elif option == "7":
+                hour = user.reminder_hour if user.reminder_hour is not None else 9
+                minute = user.reminder_minute if user.reminder_minute is not None else 0
+                await self._sessions.transition(conv, ConversationState.AWAITING_REMINDER)
+                await evolution_client.send_text(
+                    sender,
+                    f"Seu lembrete esta configurado para toda segunda-feira as {hour:02d}:{minute:02d}.\n\n"
+                    "Qual horario deseja? Digite no formato HH:MM\nExemplo: 08:30",
+                )
+            else:
+                await evolution_client.send_text(sender, menu_personalizado)
+        elif action == "faq":
+            await evolution_client.send_text(sender, result.get("answer", ""))
+        else:
+            await evolution_client.send_text(sender, menu_personalizado)
 
     async def _ask_for_value(self, sender: str, conv) -> None:
         start, end = previous_week_period()
@@ -664,10 +698,28 @@ class MessageProcessor:
                 "Tudo bem! Se mudar de ideia é só mandar uma mensagem aqui. 👋",
             )
         else:
-            await evolution_client.send_text(
-                sender,
-                "Responda *SIM* para começar o cadastro ou *NÃO* para cancelar.",
-            )
+            result = await anthropic_client.classify_or_answer(text)
+            action = result.get("action", "unknown")
+            if action == "onboarding_yes":
+                await self._sessions.transition(conv, ConversationState.ONBOARDING_NAME)
+                await evolution_client.send_text(sender, "Ótimo! Vamos começar. 😊\n\n" + _with_back("Qual é o seu nome completo?"))
+            elif action == "onboarding_no":
+                await self._sessions.reset(conv)
+                await evolution_client.send_text(
+                    sender,
+                    "Tudo bem! Se mudar de ideia é só mandar uma mensagem aqui. 👋",
+                )
+            elif action == "faq":
+                await evolution_client.send_text(sender, result.get("answer", ""))
+                await evolution_client.send_text(
+                    sender,
+                    "Responda *SIM* para começar o cadastro ou *NÃO* para cancelar.",
+                )
+            else:
+                await evolution_client.send_text(
+                    sender,
+                    "Responda *SIM* para começar o cadastro ou *NÃO* para cancelar.",
+                )
 
     async def _handle_onboarding_name(self, sender, user, conv, text) -> None:
         if not text:
@@ -676,7 +728,22 @@ class MessageProcessor:
         user.name = text
         ctx = {"nome": text}
         await self._sessions.transition(conv, ConversationState.ONBOARDING_USERNAME, ctx)
-        await evolution_client.send_text(sender, _with_back("CNPJ de login (somente números):"))
+        await evolution_client.send_text(
+            sender,
+            "⚠️ *Atenção antes de continuar!*\n\n"
+            "O bot usa login com *CNPJ + Senha* no portal nfse.gov.br.\n\n"
+            "Se você só tem acesso pelo *Gov.br*, precisará criar uma senha direta no portal primeiro:\n\n"
+            "1️⃣ Acesse nfse.gov.br\n"
+            "2️⃣ Clique em *Primeiro acesso*\n"
+            "3️⃣ Informe seu CNPJ\n"
+            "4️⃣ Crie uma senha\n"
+            "5️⃣ Confirme pelo e-mail cadastrado na Receita Federal\n\n"
+            "Depois volte aqui e continue o cadastro. 👇",
+        )
+        await evolution_client.send_text(
+            sender,
+            _with_back("Informe seu CNPJ de login (somente números):"),
+        )
 
     async def _handle_onboarding_username(self, sender, user, conv, text) -> None:
         if not text or not _validate_cnpj(text):
@@ -748,6 +815,24 @@ class MessageProcessor:
 
         ctx = await self._sessions.get_context(conv)
         is_first_credential = not await self._users.user_is_configured(user.id)
+
+        # Validate credentials before saving — avoids waiting until Monday to discover errors
+        await evolution_client.send_text(
+            sender,
+            "⏳ Verificando suas credenciais no portal... pode levar até 30 segundos.",
+        )
+        try:
+            await self._nfse.test_credentials(ctx["username"], ctx["password"])
+        except Exception as exc:
+            stage = getattr(exc, "stage", "login")
+            msg = await anthropic_client.explain_emission_error(stage, str(exc))
+            await evolution_client.send_text(sender, msg)
+            await evolution_client.send_text(
+                sender,
+                _with_back("Corrija suas credenciais e tente novamente.\n\nInforme seu CNPJ de login:"),
+            )
+            await self._sessions.transition(conv, ConversationState.ONBOARDING_USERNAME, ctx)
+            return
 
         await self._users.save_credential(user.id, {
             "portal_type": "nacional",
@@ -850,11 +935,8 @@ class MessageProcessor:
         except (CredentialNotFoundError, NfseEmissionError) as exc:
             logger.error("Emission error for {}: {}", sender, exc)
             await self._sessions.reset(conv)
-            is_credential_issue = isinstance(exc, CredentialNotFoundError) or getattr(exc, "critical", False)
-            if is_credential_issue:
-                msg = "❌ Falha na emissao: credenciais invalidas ou expiradas. Atualize seus dados com a opcao 3."
-            else:
-                msg = "❌ Falha ao emitir a NFS-e. Tente novamente mais tarde ou contate o suporte (opcao 4)."
+            stage = getattr(exc, "stage", "login" if isinstance(exc, CredentialNotFoundError) else "unknown")
+            msg = await anthropic_client.explain_emission_error(stage, str(exc))
             await evolution_client.send_text(sender, msg)
             return
 

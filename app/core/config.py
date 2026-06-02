@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     affiliate_api_url: str = ""
     affiliate_api_key: str = ""
 
+    # Anthropic / Claude
+    anthropic_api_key: str = ""
+
     # Admin
     admin_number: str = ""
 
