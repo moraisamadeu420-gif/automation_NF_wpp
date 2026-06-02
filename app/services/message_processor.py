@@ -805,7 +805,13 @@ class MessageProcessor:
         if not text:
             await evolution_client.send_text(sender, _with_back("Informe seu municipio:"))
             return
-        if not re.match(r"^[A-Za-záàâãéèêíïóôõöúçÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇ ]+/[A-Z]{2}$", text.strip()):
+        # Normalize common mobile typos for the separator (? - \ .)
+        text = re.sub(r"[?\-\\.](?=[A-Za-z]{2}$)", "/", text.strip())
+        # Upper-case the UF part
+        if "/" in text:
+            city, uf = text.rsplit("/", 1)
+            text = f"{city.strip()}/{uf.strip().upper()}"
+        if not re.match(r"^[A-Za-záàâãéèêíïóôõöúçÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇ ]+/[A-Z]{2}$", text):
             await evolution_client.send_text(
                 sender,
                 _with_back("Formato invalido. Use Cidade/UF com a sigla do estado em maiúsculas (ex: Campinas/SP):"),
@@ -837,8 +843,10 @@ class MessageProcessor:
         )
 
     async def _handle_onboarding_confirm(self, sender, user, conv, text) -> None:
-        upper = text.upper()
+        upper = _normalize(text)
         if upper not in ("SIM", "S", "NAO", "NÃO", "N", "CANCELAR"):
+            if await self._faq_intercept(sender, text, _with_back("Responda SIM para confirmar ou NAO para cancelar.")):
+                return
             await evolution_client.send_text(sender, _with_back("Responda SIM para confirmar ou NAO para cancelar."))
             return
 
