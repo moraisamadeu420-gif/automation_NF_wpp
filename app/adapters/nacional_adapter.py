@@ -375,22 +375,71 @@ class NacionalAdapter(BaseNfseAdapter):
 
         page.wait_for_timeout(2_000)
 
-        # Estratégia principal: abre o "Visualizar NFS-e" e imprime como PDF
-        # — contorna o captcha do botão de download completamente
+        # Clica em Baixar DANFSe para abrir o modal hCaptcha
         try:
-            href = page.locator("a:has-text('Visualizar NFS-e')").first.get_attribute("href", timeout=5_000) or ""
-            if href and not href.startswith("http"):
-                href = "https://www.nfse.gov.br" + href
-            if href:
-                page.goto(href, wait_until="networkidle", timeout=30_000)
-                if "login" not in page.url.lower():
-                    page.pdf(path=str(dest), format="A4", print_background=True)
-                    logger.info("PDF gerado via Visualizar NFS-e: {}", dest.name)
-                    return dest
-                logger.warning("Visualizar NFS-e redirecionou para login")
+            page.locator("a:has-text('Baixar DANFSe')").first.click(
+                timeout=15_000, force=True
+            )
         except Exception as exc:
-            logger.warning("Visualizar NFS-e falhou: {}", exc)
+            logger.warning("Clique em Baixar DANFSe falhou: {}", exc)
+            _screenshot(page, "pdf_erro")
+            return None
 
-        _screenshot(page, "pdf_erro")
-        logger.warning("Todas as tentativas de download falharam")
-        return None
+        # Tenta download direto (sem captcha — raro mas possível)
+        try:
+            page.wait_for_selector("#modalCaptcha", state="visible", timeout=6_000)
+        except Exception:
+            try:
+                with page.expect_download(timeout=8_000) as dl:
+                    pass
+                dl.value.save_as(str(dest))
+                logger.info("PDF salvo (sem captcha): {}", dest.name)
+                return dest
+            except Exception:
+                pass
+
+        logger.info("Modal hCaptcha detectado — resolvendo via 2captcha...")
+
+        # Extrai a sitekey do widget hCaptcha
+        site_key = page.evaluate("""() => {
+            const el = document.querySelector('#modalCaptcha [data-sitekey]')
+                     || document.querySelector('#modalCaptcha iframe[src*="hcaptcha"]');
+            if (!el) return null;
+            return el.getAttribute('data-sitekey')
+                || new URL(el.src).searchParams.get('sitekey');
+        }""")
+
+        if not site_key:
+            logger.warning("sitekey do hCaptcha não encontrada no modal")
+            _screenshot(page, "pdf_erro")
+            return None
+
+        logger.info("sitekey hCaptcha: {}", site_key)
+
+        from app.utils.twocaptcha import solve_hcaptcha
+        token = solve_hcaptcha(settings.twocaptcha_api_key, site_key, page.url)
+
+        if not token:
+            logger.warning("2captcha não retornou token — download cancelado")
+            _screenshot(page, "pdf_erro")
+            return None
+
+        # Injeta o token e confirma
+        page.evaluate("""(token) => {
+            for (const name of ['h-captcha-response', 'g-recaptcha-response']) {
+                const el = document.querySelector(`[name="${name}"]`);
+                if (el) { el.value = token; el.dispatchEvent(new Event('change')); }
+            }
+            if (window.hcaptcha) { try { hcaptcha.setResponse(token); } catch(e) {} }
+        }""", token)
+
+        try:
+            with page.expect_download(timeout=30_000) as dl:
+                page.locator("#modalCaptcha button:has-text('Confirmar')").click(timeout=10_000)
+            dl.value.save_as(str(dest))
+            logger.info("PDF salvo via 2captcha: {}", dest.name)
+            return dest
+        except Exception as exc:
+            _screenshot(page, "pdf_erro")
+            logger.warning("Download após captcha falhou: {}", exc)
+            return None

@@ -69,8 +69,9 @@ class Settings(BaseSettings):
     # Anthropic / Claude
     anthropic_api_key: str = ""
 
-    # CapSolver (hCaptcha solving para download do DANFSe)
+    # CapSolver / 2captcha (hCaptcha solving para download do DANFSe)
     capsolver_api_key: str = ""
+    twocaptcha_api_key: str = ""
 
     # Admin
     admin_number: str = ""
