@@ -1000,7 +1000,15 @@ class MessageProcessor:
                 caption=f"NFS-e {invoice.invoice_number or ''}",
             )
         else:
-            await evolution_client.send_text(sender, reply + "\n\n(PDF nao disponivel para download)")
+            await evolution_client.send_text(
+                sender,
+                reply + (
+                    "\n\n⚠️ O portal bloqueou o download automático do PDF desta vez.\n"
+                    "Você pode baixar manualmente em:\n"
+                    "👉 https://www.nfse.gov.br/EmissorNacional/Login\n"
+                    "(Acesse 'Notas Emitidas' e baixe a nota acima.)"
+                ),
+            )
 
     # ── HISTORY ──────────────────────────────────────────────────────────────
 
