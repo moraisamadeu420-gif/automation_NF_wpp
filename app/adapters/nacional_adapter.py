@@ -209,6 +209,11 @@ class NacionalAdapter(BaseNfseAdapter):
                     }
                 }
             }""")
+            # Aguarda o modal de loading sumir antes de interagir com o campo
+            try:
+                page.wait_for_selector("#modalLoading", state="hidden", timeout=15_000)
+            except Exception:
+                pass
             page.wait_for_selector("#Tomador_Inscricao", state="visible", timeout=15_000)
             page.locator("#Tomador_Inscricao").click(timeout=10_000)
             page.locator("#Tomador_Inscricao").fill(_TOMADOR_CNPJ)
