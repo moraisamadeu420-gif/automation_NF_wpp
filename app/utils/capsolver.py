@@ -26,30 +26,36 @@ def solve_hcaptcha(api_key: str, site_key: str, page_url: str) -> str | None:
         logger.warning("CAPSOLVER_API_KEY não configurada — captcha não pode ser resolvido")
         return None
 
-    logger.info("CapSolver: enviando tarefa hCaptcha para {}", page_url)
-    try:
-        resp = requests.post(
-            f"{_BASE_URL}/createTask",
-            json={
-                "clientKey": api_key,
-                "task": {
-                    "type": "HCaptchaTaskProxyless",
-                    "websiteURL": page_url,
-                    "websiteKey": site_key,
+    # Tenta enterprise primeiro (portal usa hCaptcha com desafio de imagens)
+    # e cai para o tipo padrão se não suportado
+    for task_type in ("HCaptchaEnterpriseTaskProxyless", "HCaptchaTaskProxyless"):
+        logger.info("CapSolver: tentando tipo '{}' para {}", task_type, page_url)
+        try:
+            resp = requests.post(
+                f"{_BASE_URL}/createTask",
+                json={
+                    "clientKey": api_key,
+                    "task": {
+                        "type": task_type,
+                        "websiteURL": page_url,
+                        "websiteKey": site_key,
+                    },
                 },
-            },
-            timeout=15,
-        )
-        if not resp.ok:
-            logger.warning("CapSolver createTask HTTP {}: {}", resp.status_code, resp.text[:300])
-            return None
-        data = resp.json()
-    except Exception as exc:
-        logger.warning("CapSolver createTask falhou: {}", exc)
-        return None
-
-    if data.get("errorId", 0) != 0:
-        logger.warning("CapSolver erro: {} — {}", data.get("errorCode"), data.get("errorDescription"))
+                timeout=15,
+            )
+            if not resp.ok:
+                logger.warning("CapSolver createTask HTTP {}: {}", resp.status_code, resp.text[:300])
+                continue
+            data = resp.json()
+            if data.get("errorId", 0) != 0:
+                logger.warning("CapSolver erro ({}): {} — {}", task_type, data.get("errorCode"), data.get("errorDescription"))
+                continue
+            # Saiu sem erro — usa esse tipo
+            break
+        except Exception as exc:
+            logger.warning("CapSolver createTask falhou ({}): {}", task_type, exc)
+            continue
+    else:
         return None
 
     task_id = data.get("taskId")
