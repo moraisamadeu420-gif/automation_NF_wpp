@@ -969,7 +969,7 @@ class MessageProcessor:
         await self._sessions.transition(conv, ConversationState.PROCESSING)
         await evolution_client.send_text(
             sender,
-            f"Iniciando emissao de R$ {valor_br}...\nIsso pode levar 1-2 minutos.",
+            f"Iniciando emissao de R$ {valor_br}...\nIsso pode levar até 10 minutos. Aguarde — vou te avisar quando estiver pronto.",
         )
 
         try:
