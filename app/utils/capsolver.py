@@ -33,14 +33,16 @@ def solve_hcaptcha(api_key: str, site_key: str, page_url: str) -> str | None:
             json={
                 "clientKey": api_key,
                 "task": {
-                    "type": "HCaptchaTaskProxyLess",
+                    "type": "HCaptchaTaskProxyless",
                     "websiteURL": page_url,
                     "websiteKey": site_key,
                 },
             },
             timeout=15,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            logger.warning("CapSolver createTask HTTP {}: {}", resp.status_code, resp.text[:300])
+            return None
         data = resp.json()
     except Exception as exc:
         logger.warning("CapSolver createTask falhou: {}", exc)
