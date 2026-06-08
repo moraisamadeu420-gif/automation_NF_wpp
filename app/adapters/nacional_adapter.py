@@ -367,50 +367,82 @@ class NacionalAdapter(BaseNfseAdapter):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest = settings.pdf_path / f"{request.user_id}_{timestamp}.pdf"
 
-        # Pausa humanizada antes de tentar o download
-        page.wait_for_timeout(3_000)
+        page.wait_for_timeout(2_000)
 
-        # Tentativa 1: JS click dentro da página — indistinguível de clique humano
-        # e não aciona reCAPTCHA diferente de chamadas HTTP externas
+        # Clica no botão — isso vai abrir o modal hCaptcha
+        try:
+            page.locator("a:has-text('Baixar DANFSe')").first.click(
+                timeout=15_000, force=True  # force=True ignora o overlay do modal anterior
+            )
+        except Exception as exc:
+            logger.warning("Clique em Baixar DANFSe falhou: {}", exc)
+            _screenshot(page, "pdf_erro")
+            return None
+
+        # Aguarda o modal hCaptcha aparecer
+        try:
+            page.wait_for_selector("#modalCaptcha", state="visible", timeout=10_000)
+        except Exception:
+            # Modal não apareceu — talvez o download iniciou direto
+            try:
+                with page.expect_download(timeout=10_000) as dl:
+                    pass
+                dl.value.save_as(str(dest))
+                logger.info("PDF salvo (sem captcha): {}", dest.name)
+                return dest
+            except Exception:
+                pass
+            _screenshot(page, "pdf_erro")
+            logger.warning("Modal captcha não apareceu e download não iniciou")
+            return None
+
+        logger.info("Modal hCaptcha detectado — resolvendo via CapSolver...")
+
+        # Extrai a sitekey do widget hCaptcha dentro do modal
+        site_key = page.evaluate("""() => {
+            const el = document.querySelector('#modalCaptcha [data-sitekey]')
+                     || document.querySelector('#modalCaptcha iframe[src*="hcaptcha"]');
+            if (!el) return null;
+            return el.getAttribute('data-sitekey')
+                || new URL(el.src).searchParams.get('sitekey');
+        }""")
+
+        if not site_key:
+            logger.warning("sitekey do hCaptcha não encontrada no modal")
+            _screenshot(page, "pdf_erro")
+            return None
+
+        logger.info("sitekey hCaptcha: {}", site_key)
+
+        from app.utils.capsolver import solve_hcaptcha
+        token = solve_hcaptcha(settings.capsolver_api_key, site_key, page.url)
+
+        if not token:
+            logger.warning("CapSolver não retornou token — download cancelado")
+            _screenshot(page, "pdf_erro")
+            return None
+
+        # Injeta o token e submete o captcha
+        page.evaluate(f"""(token) => {{
+            // Injeta nas textareas padrão do hCaptcha
+            for (const name of ['h-captcha-response', 'g-recaptcha-response']) {{
+                const el = document.querySelector(`[name="${{name}}"]`);
+                if (el) {{ el.value = token; el.dispatchEvent(new Event('change')); }}
+            }}
+            // Tenta via API do hCaptcha se disponível
+            if (window.hcaptcha) {{
+                try {{ hcaptcha.setResponse(token); }} catch (e) {{}}
+            }}
+        }}""", token)
+
+        # Clica em "Confirmar" dentro do modal
         try:
             with page.expect_download(timeout=30_000) as dl:
-                page.evaluate("""
-                    const link = [...document.querySelectorAll('a')]
-                        .find(a => a.textContent.trim().includes('Baixar DANFSe'));
-                    if (link) link.click();
-                    else throw new Error('Link Baixar DANFSe não encontrado');
-                """)
+                page.locator("#modalCaptcha button:has-text('Confirmar')").click(timeout=10_000)
             dl.value.save_as(str(dest))
-            logger.info("PDF salvo via JS click: {}", dest.name)
+            logger.info("PDF salvo via CapSolver: {}", dest.name)
             return dest
         except Exception as exc:
-            logger.warning("JS click falhou: {}", exc)
-
-        # Tentativa 2: Playwright locator click + expect_download
-        try:
-            with page.expect_download(timeout=30_000) as dl:
-                page.locator("a:has-text('Baixar DANFSe')").first.click(timeout=15_000)
-            dl.value.save_as(str(dest))
-            logger.info("PDF salvo via locator click: {}", dest.name)
-            return dest
-        except Exception as exc:
-            logger.warning("Locator click falhou: {}", exc)
-
-        # Tentativa 3: request context com Referer (último recurso)
-        try:
-            href = page.locator("a:has-text('Baixar DANFSe')").first.get_attribute("href", timeout=5_000) or ""
-            if href and not href.startswith("http"):
-                href = "https://www.nfse.gov.br" + href
-            if href:
-                response = page.context.request.get(href, headers={"Referer": page.url})
-                if response.ok:
-                    dest.write_bytes(response.body())
-                    logger.info("PDF salvo via request context: {}", dest.name)
-                    return dest
-                logger.warning("Request context retornou status {}", response.status)
-        except Exception as exc:
-            logger.warning("Request context falhou: {}", exc)
-
-        _screenshot(page, "pdf_erro")
-        logger.warning("Todas as tentativas de download falharam")
-        return None
+            _screenshot(page, "pdf_erro")
+            logger.warning("Download após captcha falhou: {}", exc)
+            return None
