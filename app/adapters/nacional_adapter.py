@@ -236,6 +236,12 @@ class NacionalAdapter(BaseNfseAdapter):
     def _preencher_municipio_servico_descricao(self, page: Page, request: EmissionRequest) -> None:
         logger.info("Preenchendo município, serviço e descrição...")
         try:
+            # Aguarda o modal de loading sumir antes de interagir com o município
+            try:
+                page.wait_for_selector("#modalLoading", state="hidden", timeout=15_000)
+            except Exception:
+                pass
+
             # Município — preserva o estado informado pelo usuário (ex: "Campinas/SP")
             parts = request.municipio.split("/")
             municipio_cidade = parts[0].strip()
