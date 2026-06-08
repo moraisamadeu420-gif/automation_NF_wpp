@@ -2,6 +2,7 @@
 app/integrations/evolution/client.py
 Async HTTP client for Evolution API (WhatsApp).
 """
+import asyncio
 import base64
 from pathlib import Path
 
@@ -130,12 +131,23 @@ class EvolutionClient:
             return False
 
     async def _post(self, url: str, payload: dict) -> dict:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(url, headers=self._headers, json=payload)
-        if response.status_code not in (200, 201):
-            logger.warning("Evolution API error {} — {}", response.status_code, response.text[:200])
-            raise EvolutionApiError(response.text, status_code=response.status_code)
-        return response.json()
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=30, write=30, pool=5)) as client:
+                    response = await client.post(url, headers=self._headers, json=payload)
+                if response.status_code not in (200, 201):
+                    logger.warning("Evolution API error {} — {}", response.status_code, response.text[:200])
+                    raise EvolutionApiError(response.text, status_code=response.status_code)
+                return response.json()
+            except EvolutionApiError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("Evolution API tentativa {}/3 falhou: {}", attempt, exc)
+                if attempt < 3:
+                    await asyncio.sleep(2 ** attempt)
+        raise EvolutionApiError(str(last_exc))
 
 
 evolution_client = EvolutionClient()
