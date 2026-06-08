@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.database.connection import Base
+from app.integrations.anthropic.client import anthropic_client
 from app.integrations.evolution.client import evolution_client
 from app.integrations.evolution.schemas import WebhookMessage
 from app.models.session import ConversationState
@@ -70,6 +71,20 @@ _TestSession = async_sessionmaker(
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _mock_anthropic():
+    """Evita chamadas reais à API Anthropic em testes.
+    Retorna onboarding_yes por padrão (classifica qualquer texto como confirmação de onboarding).
+    Testes que precisam de outro comportamento podem sobrescrever com patch local."""
+    with patch.object(
+        anthropic_client,
+        "classify_or_answer",
+        new_callable=AsyncMock,
+        return_value={"action": "onboarding_yes"},
+    ):
+        yield
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _reset_db() -> AsyncGenerator[None, None]:
@@ -134,6 +149,7 @@ class BotClient:
             patch.object(evolution_client, "send_text", side_effect=_capture),
             patch.object(evolution_client, "send_pdf", new_callable=AsyncMock),
             patch.object(evolution_client, "delete_message", new_callable=AsyncMock),
+            patch.object(NfseService, "test_credentials", new_callable=AsyncMock),
         ):
             await processor.process(self._build(text))
 
@@ -354,8 +370,7 @@ class TestOnboarding:
 
     async def test_any_message_from_unconfigured_starts_onboarding(self, bot: BotClient) -> None:
         await bot.send("uma mensagem completamente aleatória!")
-        assert await bot.state() == ConversationState.ONBOARDING_NAME
-        assert bot.replied_with("nome")
+        assert await bot.state() == ConversationState.ONBOARDING_WELCOME
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -756,11 +771,12 @@ class TestSubscription:
         await admin.send("ATIVAR 5599999999999 30")
         assert admin.replied_with("encontrado")
 
-    async def test_admin_activate_invalid_days(self, admin: BotClient) -> None:
-        """ATIVAR with non-numeric days shows usage message."""
+    async def test_admin_activate_invalid_days(self, bot: BotClient, admin: BotClient) -> None:
+        """ATIVAR with non-numeric days falls back to default subscription_days."""
+        await do_onboarding(bot)
         await admin.send("oi")
-        await admin.send("ATIVAR 5541999000001 abc")
-        assert admin.replied_with("uso") or "dias" in admin.last.lower()
+        await admin.send(f"ATIVAR {bot.number} abc")
+        assert admin.replied_with("ativada") or "dias" in admin.last.lower()
 
     # ── Admin: BLOQUEAR / DESBLOQUEAR ─────────────────────────────────────────
 

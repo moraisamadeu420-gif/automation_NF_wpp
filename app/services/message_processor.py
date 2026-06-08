@@ -615,7 +615,7 @@ class MessageProcessor:
         text_upper = _normalize(text)
         name = user.name or "você"
 
-        if text_upper in ("1", "EMITIR", "NOTA", "NFSE"):
+        if text_upper in ("1", "EMITIR", "NOTA", "NFSE", "INICIAR", "START", "COMECAR"):
             await self._ask_for_value(sender, conv)
             return
 
@@ -731,8 +731,8 @@ class MessageProcessor:
             result = await anthropic_client.classify_or_answer(text)
             action = result.get("action", "unknown")
             if action == "onboarding_yes":
-                await self._sessions.transition(conv, ConversationState.ONBOARDING_NAME)
-                await evolution_client.send_text(sender, "Ótimo! Vamos começar. 😊\n\n" + _with_back("Qual é o seu nome completo?"))
+                # Texto enviado é o nome do usuário — salva e pula a etapa de nome
+                await self._handle_onboarding_name(sender, user, conv, text)
             elif action == "onboarding_no":
                 await self._sessions.reset(conv)
                 await evolution_client.send_text(
