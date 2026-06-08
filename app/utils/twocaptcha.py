@@ -9,7 +9,7 @@ from loguru import logger
 
 _BASE = "https://2captcha.com"
 _POLL_INTERVAL = 5
-_MAX_ATTEMPTS  = 24  # ~2 minutos
+_MAX_ATTEMPTS  = 60  # ~5 minutos
 
 
 def solve_hcaptcha(api_key: str, site_key: str, page_url: str) -> str | None:
