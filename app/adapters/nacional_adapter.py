@@ -342,14 +342,17 @@ class NacionalAdapter(BaseNfseAdapter):
 
         # Fallback: extrai do href do botão de download
         # ex: /EmissorNacional/Notas/Download/DANFSe/<chave50digitos>
+        # Chave: cMun(7) + AnoMes(4) + CNPJ(14) + nNFSe(9) + ...
+        # Posições 25–33 são o nNFSe; se zeros, tenta 33–41
         try:
             href = page.locator("a:has-text('Baixar DANFSe')").first.get_attribute("href") or ""
             chave = href.rstrip("/").split("/")[-1]
-            if len(chave) >= 34:
-                # Posições 25–33 da chave NFS-e = número sequencial da nota
-                n_nfse = chave[25:34].lstrip("0") or "0"
-                logger.info("Número da nota extraído do href: {}", n_nfse)
-                return n_nfse
+            if len(chave) >= 42:
+                for start, end in [(25, 34), (33, 42)]:
+                    candidate = chave[start:end].lstrip("0")
+                    if candidate and candidate != "0":
+                        logger.info("Número da nota extraído do href (pos {}-{}): {}", start, end, candidate)
+                        return candidate
         except Exception:
             pass
 
@@ -364,36 +367,50 @@ class NacionalAdapter(BaseNfseAdapter):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest = settings.pdf_path / f"{request.user_id}_{timestamp}.pdf"
 
-        page.wait_for_timeout(2_000)
+        # Pausa humanizada antes de tentar o download
+        page.wait_for_timeout(3_000)
 
-        # Pega o href do link <a> correto (get_by_text pegaria o <span> interno)
+        # Tentativa 1: JS click dentro da página — indistinguível de clique humano
+        # e não aciona reCAPTCHA diferente de chamadas HTTP externas
         try:
-            href = page.locator("a:has-text('Baixar DANFSe')").first.get_attribute("href", timeout=5_000)
-        except Exception:
-            href = None
+            with page.expect_download(timeout=30_000) as dl:
+                page.evaluate("""
+                    const link = [...document.querySelectorAll('a')]
+                        .find(a => a.textContent.trim().includes('Baixar DANFSe'));
+                    if (link) link.click();
+                    else throw new Error('Link Baixar DANFSe não encontrado');
+                """)
+            dl.value.save_as(str(dest))
+            logger.info("PDF salvo via JS click: {}", dest.name)
+            return dest
+        except Exception as exc:
+            logger.warning("JS click falhou: {}", exc)
 
-        if href:
-            if not href.startswith("http"):
+        # Tentativa 2: Playwright locator click + expect_download
+        try:
+            with page.expect_download(timeout=30_000) as dl:
+                page.locator("a:has-text('Baixar DANFSe')").first.click(timeout=15_000)
+            dl.value.save_as(str(dest))
+            logger.info("PDF salvo via locator click: {}", dest.name)
+            return dest
+        except Exception as exc:
+            logger.warning("Locator click falhou: {}", exc)
+
+        # Tentativa 3: request context com Referer (último recurso)
+        try:
+            href = page.locator("a:has-text('Baixar DANFSe')").first.get_attribute("href", timeout=5_000) or ""
+            if href and not href.startswith("http"):
                 href = "https://www.nfse.gov.br" + href
-            # Usa a sessão ativa do Playwright (mesmos cookies) — evita redirect pro login
-            try:
-                response = page.context.request.get(href)
+            if href:
+                response = page.context.request.get(href, headers={"Referer": page.url})
                 if response.ok:
                     dest.write_bytes(response.body())
                     logger.info("PDF salvo via request context: {}", dest.name)
                     return dest
                 logger.warning("Request context retornou status {}", response.status)
-            except Exception as exc:
-                logger.warning("Falha no request context: {}", exc)
-
-        # Fallback: click normal com expect_download
-        try:
-            with page.expect_download(timeout=30_000) as dl:
-                page.locator("a:has-text('Baixar DANFSe')").first.click(timeout=15_000)
-            dl.value.save_as(str(dest))
-            logger.info("PDF salvo via click: {}", dest.name)
-            return dest
         except Exception as exc:
-            _screenshot(page, "pdf_erro")
-            logger.warning("Falha ao baixar PDF: {}", exc)
-            return None
+            logger.warning("Request context falhou: {}", exc)
+
+        _screenshot(page, "pdf_erro")
+        logger.warning("Todas as tentativas de download falharam")
+        return None
