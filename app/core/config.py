@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # Admin
     admin_number: str = ""
 
+    # Whitelist de números autorizados (separados por vírgula, só dígitos).
+    # Se vazio, o bot responde a qualquer número.
+    # Ex: "5519971721948,5511999887766"
+    allowed_numbers: str = ""
+
     # Development / testing
     dry_run: bool = False
     nfse_dry_run: bool = False

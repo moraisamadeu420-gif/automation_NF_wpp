@@ -184,6 +184,16 @@ class MessageProcessor:
 
         sender = number.split("@")[0]
 
+        # ── Whitelist: ignora números não autorizados ─────────────────────────
+        if settings.allowed_numbers:
+            allowed_env = {re.sub(r"\D", "", n) for n in settings.allowed_numbers.split(",") if n.strip()}
+            if sender not in allowed_env:
+                # Checa whitelist dinâmica no banco (admin pode liberar via LIBERAR <número>)
+                db_user = await UserRepository(self._session).get_by_whatsapp_number(sender)
+                if not (db_user and db_user.is_whitelisted):
+                    logger.debug("Número {} não está na whitelist — ignorado", sender)
+                    return
+
         # ── Tipo de mensagem não suportado ────────────────────────────────────
         _TEXT_TYPES = {"conversation", "extendedTextMessage", None}
         if msg_type not in _TEXT_TYPES:
@@ -367,6 +377,8 @@ class MessageProcessor:
         "LISTAR — todos os usuários com status\n"
         "BLOQUEAR <número> — bloqueia acesso\n"
         "DESBLOQUEAR <número> — remove bloqueio\n"
+        "LIBERAR <número> — adiciona número à whitelist\n"
+        "REMOVER <número> — remove número da whitelist\n"
         "ADMIN — exibe este menu"
     )
 
@@ -449,6 +461,25 @@ class MessageProcessor:
                 return True
             await self._users.unblock_user(target)
             await evolution_client.send_text(sender, f"✅ Usuário {target_number} desbloqueado.")
+            return True
+
+        if cmd == "LIBERAR" and len(parts) >= 2:
+            target_number = re.sub(r"\D", "", parts[1])
+            target, _ = await self._users.get_or_create_user(target_number, "")
+            target.is_whitelisted = True
+            await self._session.commit()
+            await evolution_client.send_text(sender, f"✅ {target_number} liberado — bot responderá a esse número.")
+            return True
+
+        if cmd == "REMOVER" and len(parts) >= 2:
+            target_number = re.sub(r"\D", "", parts[1])
+            target = await self._users.get_by_number(target_number)
+            if not target:
+                await evolution_client.send_text(sender, f"Usuário {target_number} não encontrado.")
+                return True
+            target.is_whitelisted = False
+            await self._session.commit()
+            await evolution_client.send_text(sender, f"🚫 {target_number} removido da whitelist.")
             return True
 
         if cmd == "STATUS" and len(parts) >= 2:

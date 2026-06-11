@@ -17,6 +17,7 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(120))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_whitelisted: Mapped[bool] = mapped_column(Boolean, default=False)
     subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     subscription_cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_payment_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
