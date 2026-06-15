@@ -131,6 +131,9 @@ class NacionalAdapter(BaseNfseAdapter):
 
             if "login" in page.url.lower():
                 shot = _screenshot(page, "login_falhou")
+                # Captura texto da página para diagnóstico (alerta de captcha, bloqueio, etc.)
+                page_text = page.locator("body").inner_text(timeout=3_000)
+                logger.warning("Login falhou — URL: {} | Conteúdo: {}", page.url, page_text[:400])
                 raise NfseEmissionError(
                     "Credenciais invalidas ou sessao expirada. Verifique usuario e senha.",
                     stage="login",
