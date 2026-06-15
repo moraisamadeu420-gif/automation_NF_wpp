@@ -398,7 +398,7 @@ class NacionalAdapter(BaseNfseAdapter):
             except Exception:
                 pass
 
-        logger.info("Modal hCaptcha detectado — resolvendo via 2captcha...")
+        logger.info("Modal hCaptcha detectado — iniciando resolução...")
 
         # Extrai a sitekey do widget hCaptcha
         site_key = page.evaluate("""() => {

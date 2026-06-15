@@ -22,7 +22,6 @@ def _submit_task(api_key: str, site_key: str, page_url: str) -> str | None:
                 "method": "hcaptcha",
                 "sitekey": site_key,
                 "pageurl": page_url,
-                "enterprise": 1,
                 "json": 1,
             },
             timeout=15,
